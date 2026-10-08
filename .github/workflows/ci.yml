@@ -1,0 +1,28 @@
+name: Checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install build dependency
+        shell: pwsh
+        run: Install-Module PSScriptBuilder -RequiredVersion 1.2.0 -Scope CurrentUser -Force
+      - name: Build standalone script
+        shell: pwsh
+        run: ./scripts/Build.ps1
+      - name: Verify source and bundle
+        shell: pwsh
+        run: ./scripts/Test.ps1

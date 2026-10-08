@@ -24,7 +24,7 @@ try {
                     $context.Response.ContentType='application/json'
                     if ($i -eq 0 -and $case.status -ne 200) {$context.Response.StatusCode=$case.status;$context.Response.AddHeader('Retry-After','1');$json='{"error":"mock"}'}
                     else {$json='{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Saved successfully"}}]}'}
-                    $bytes=[Text.Encoding]::UTF8.GetBytes($json);$context.Response.OutputStream.Write($bytes,0,$bytes.Length);$context.Response.Close()
+                    $bytes=[Text.Encoding]::UTF8.GetBytes($json);$context.Response.ContentLength64=$bytes.Length;$context.Response.OutputStream.Write($bytes,0,$bytes.Length);$context.Response.Close()
                 }
                 @{requests=$requests.ToArray()}
             } finally {$listener.Close()}
@@ -43,7 +43,7 @@ try {
             } else {
                 $a=New-GoAgent -Workspace $root -BaseUri "http://127.0.0.1:$port/v1" -MaxRetries $case.retries
                 $events=[Collections.Generic.List[object]]::new();$failed=$false;$answer=''
-                try {$answer=Invoke-GoAgent $a 'test' -NoStream:(-not $case.stream) -OnEvent {$events.Add($args[0])}} catch {$failed=$true}
+                try {$answer=Invoke-GoAgent $a 'test' -NoStream:(-not $case.stream) -OnEvent {$events.Add($args[0])}} catch {$failed=$true;Write-Host "Request failed: $($_.Exception.Message)"}
                 if ($case.steps -eq 2) {
                     Assert ($answer -eq 'Saved successfully' -and -not $failed) "$($case.name) automatically resends transient failure"
                     Assert (@($events | Where-Object type -EQ retry).Count -eq 1) "$($case.name) reports retry progress"

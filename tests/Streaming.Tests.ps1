@@ -32,6 +32,7 @@ function Start-Server([string]$Protocol,[string]$Scenario='Normal') {
             $count=if ($scenario -in @('Normal','Cli')) {2} elseif ($scenario -eq 'Retry') {3} else {1}
             for ($step=0;$step -lt $count;$step++) {
                 $context=$listener.GetContext()
+                $context.Response.KeepAlive=$false
                 $reader=[IO.StreamReader]::new($context.Request.InputStream,[Text.Encoding]::UTF8)
                 $body=$reader.ReadToEnd() | ConvertFrom-Json -AsHashtable;$reader.Dispose()
                 $requests.Add(@{path=$context.Request.Url.AbsolutePath;session=$context.Request.Headers['x-opencode-session'];auth=$context.Request.Headers['Authorization'];body=$body})
@@ -39,7 +40,7 @@ function Start-Server([string]$Protocol,[string]$Scenario='Normal') {
                 if ($scenario -eq 'Json') {
                     $context.Response.ContentType='application/json'
                     $bytes=[Text.Encoding]::UTF8.GetBytes('{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"JSON complete","reasoning_content":"JSON reasoning"}}]}')
-                    $context.Response.OutputStream.Write($bytes,0,$bytes.Length);$context.Response.Close();continue
+                    $context.Response.ContentLength64=$bytes.Length;$context.Response.OutputStream.Write($bytes,0,$bytes.Length);$context.Response.Close();continue
                 }
                 $context.Response.ContentType='text/event-stream; charset=utf-8';$context.Response.SendChunked=$true
                 $first=if ($scenario -eq 'Retry') {$step -eq 1} else {$step -eq 0}
@@ -103,7 +104,7 @@ function Start-Server([string]$Protocol,[string]$Scenario='Normal') {
                 $context.Response.Close()
             }
             @{requests=$requests.ToArray()}
-        } finally {$listener.Stop();$listener.Close()}
+        } finally {Start-Sleep -Milliseconds 500;$listener.Stop();$listener.Close()}
     }
     $deadline=[datetime]::UtcNow.AddSeconds(15)
     while (-not [IO.File]::Exists($ready)) {if ([datetime]::UtcNow -gt $deadline) {Stop-Job $job;Remove-Job $job -Force;throw 'SSE server startup failed.'};Start-Sleep -Milliseconds 100}

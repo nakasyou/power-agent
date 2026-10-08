@@ -5,7 +5,7 @@
     Author = 'PSGoAgent contributors'
     Description = 'PowerShell-only coding agent for OpenCode Go'
     PowerShellVersion = '7.2'
-    FunctionsToExport = @('Connect-GoMcp','Disconnect-GoMcp','Connect-GoCodex','Disconnect-GoCodex','Set-GoModel','Set-GoReasoning','New-GoAgent','Invoke-GoAgent','Save-GoSession','Import-GoSession','Get-GoModelCatalog','Get-GoTools','Invoke-GoTool')
+    FunctionsToExport = @('Get-GoVersion','Connect-GoMcp','Disconnect-GoMcp','Connect-GoCodex','Disconnect-GoCodex','Set-GoModel','Set-GoReasoning','New-GoAgent','Invoke-GoAgent','Save-GoSession','Import-GoSession','Get-GoModelCatalog','Get-GoTools','Invoke-GoTool')
     CmdletsToExport = @()
     VariablesToExport = @()
     AliasesToExport = @()

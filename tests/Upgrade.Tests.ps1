@@ -1,51 +1,37 @@
 #requires -Version 7.2
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot '../Upgrade.Core.ps1')
-$root=Join-Path ([IO.Path]::GetTempPath()) ('upgrade-test-'+[guid]::NewGuid())
-$null=New-Item -ItemType Directory -Path $root
+$root=Join-Path ([IO.Path]::GetTempPath()) ('release-upgrade-'+[guid]::NewGuid());$null=New-Item -ItemType Directory $root
 $count=0
-function Assert($Condition,$Message) {if (-not $Condition) {throw $Message};$script:count++;Write-Host "PASS: $Message"}
+function Assert($Condition,$Message) {if (-not $Condition) {throw "FAIL: $Message"};$script:count++;Write-Host "PASS: $Message"}
 try {
-    $package=Join-Path $root 'package/power-agent-main'
-    $null=New-Item -ItemType Directory -Path $package -Force
-    foreach ($path in @('PSGoAgent.psd1','PSGoAgent.psm1','Tools.ps1','Streaming.ps1','Console.ps1','Start-GoAgent.ps1','Upgrade.ps1','Upgrade.Core.ps1','README.md','LICENSE','docs','tests')) {
-        Copy-Item -LiteralPath (Join-Path $PSScriptRoot "../$path") -Destination $package -Recurse
+    $source=Join-Path $root 'download.ps1';$sum=Join-Path $root 'checksums.txt';$target=Join-Path $root 'install/Power-Agent.ps1'
+    Set-Content $source "#requires -Version 7.2`n`$script:PowerAgentVersion='0.6.0'`n`$script:PowerAgentBundle=`$true`nWrite-Output 'new bundle'"
+    Set-Content $sum ((Get-FileHash $source -Algorithm SHA256).Hash+'  Power-Agent.ps1')
+    $release=@{tag_name='v0.6.0';assets=@(@{name='Power-Agent.ps1';browser_download_url='https://github.com/nakasyou/power-agent/releases/download/v0.6.0/Power-Agent.ps1'},@{name='SHA256SUMS.txt';browser_download_url='https://github.com/nakasyou/power-agent/releases/download/v0.6.0/SHA256SUMS.txt'})}
+    $request={param($Uri) $release}.GetNewClosure()
+    $download={param($Uri,$Path) Copy-Item $(if ($Uri.EndsWith('.ps1')) {$source} else {$sum}) $Path}.GetNewClosure()
+    $null=New-Item -ItemType Directory (Join-Path $root 'install/sessions') -Force
+    Set-Content $target 'old bundle';Set-Content (Join-Path $root 'install/.env') 'secret';Set-Content (Join-Path $root 'install/sessions/example.session.json') 'history'
+    $result=Invoke-GoReleaseUpgrade -TargetPath $target -ReleaseRequest $request -Download $download
+    Assert ($result.Version -eq '0.6.0' -and (Get-Content $target -Raw).Contains('new bundle')) 'release asset replaces target script'
+    Assert ((Get-Content (Join-Path $root 'install/.env')) -eq 'secret') 'secrets preserved'
+    Assert ((Get-Content (Join-Path $root 'install/sessions/example.session.json')) -eq 'history') 'sessions preserved'
+    $before=Get-Content $target -Raw
+    Set-Content $sum ('0'*64+'  Power-Agent.ps1')
+    $failed=$false;try {Invoke-GoReleaseUpgrade -TargetPath $target -ReleaseRequest $request -Download $download} catch {$failed=$true}
+    Assert ($failed -and (Get-Content $target -Raw) -eq $before) 'checksum mismatch leaves installation intact'
+    $failed=$false;try {Invoke-GoReleaseUpgrade -TargetPath $target -ReleaseRequest {throw 'network failure'}} catch {$failed=$true}
+    Assert ($failed -and (Get-Content $target -Raw) -eq $before) 'download failure leaves installation intact'
+    $release.assets[0].browser_download_url='https://example.com/malicious.ps1'
+    $failed=$false;try {Invoke-GoReleaseUpgrade -TargetPath $target -ReleaseRequest $request -Download $download} catch {$failed=$true}
+    Assert $failed 'untrusted asset URL rejected'
+    $manifest=Join-Path $root 'version.psd1'
+    foreach ($bump in @('patch','minor','major')) {
+        Set-Content $manifest "@{ModuleVersion='1.2.3'}"
+        $version=& (Join-Path $PSScriptRoot '../scripts/Bump-Version.ps1') -ManifestPath $manifest -Bump $bump
+        $expected=switch ($bump) {patch {'1.2.4'} minor {'1.3.0'} major {'2.0.0'}}
+        Assert ($version -eq $expected -and (Import-PowerShellDataFile $manifest).ModuleVersion -eq $expected) "$bump increments version correctly"
     }
-    $zip=Join-Path $root 'latest.zip'
-    Compress-Archive -Path $package -DestinationPath $zip
-    $install=Join-Path $root 'install'
-    $null=New-Item -ItemType Directory -Path (Join-Path $install 'sessions') -Force
-    Set-Content (Join-Path $install 'sessions/test.session.json') 'session'
-    Set-Content (Join-Path $install '.env') 'secret'
-    Set-Content (Join-Path $install 'custom.txt') 'custom'
-    Set-Content (Join-Path $install 'README.md') 'old'
-    $download={param($Uri,$Path) Copy-Item -LiteralPath $zip -Destination $Path}.GetNewClosure()
-    $result=Invoke-GoUpgrade -InstallDirectory $install -Download $download
-    Assert ($result.Version -eq '0.5.1') 'version comes from downloaded manifest'
-    Assert (Test-Path (Join-Path $install 'Start-GoAgent.ps1')) 'archive root is flattened'
-    Assert (-not (Test-Path (Join-Path $install 'power-agent-main'))) 'no nested installation'
-    Assert ((Get-Content (Join-Path $install '.env')) -eq 'secret') 'secrets preserved'
-    Assert ((Get-Content (Join-Path $install 'sessions/test.session.json')) -eq 'session') 'sessions preserved'
-    Assert ((Get-Content (Join-Path $install 'custom.txt')) -eq 'custom') 'custom files preserved'
-    $before=Get-Content (Join-Path $install 'README.md') -Raw
-    $failed=$false
-    try {Invoke-GoUpgrade -InstallDirectory $install -Download {throw 'network failure'}} catch {$failed=$true}
-    Assert $failed 'download failure reported'
-    Assert ((Get-Content (Join-Path $install 'README.md') -Raw) -eq $before) 'download failure leaves installation intact'
-    $bad=Join-Path $root 'bad.zip'
-    $archive=[IO.Compression.ZipFile]::Open($bad,[IO.Compression.ZipArchiveMode]::Create)
-    $null=$archive.CreateEntry('power-agent-main/../../escape.txt');$archive.Dispose()
-    $badDownload={param($Uri,$Path) Copy-Item $bad $Path}.GetNewClosure()
-    $failed=$false
-    try {Invoke-GoUpgrade -InstallDirectory $install -Download $badDownload} catch {$failed=$true}
-    Assert $failed 'zip path traversal rejected'
-    Assert (-not (Test-Path (Join-Path $root 'escape.txt'))) 'zip cannot escape staging directory'
-    Remove-Item (Join-Path $package 'Tools.ps1')
-    Remove-Item $zip
-    Compress-Archive -Path $package -DestinationPath $zip
-    $failed=$false
-    try {Invoke-GoUpgrade -InstallDirectory $install -Download $download} catch {$failed=$true}
-    Assert $failed 'incomplete package rejected'
-    Assert ((Get-Content (Join-Path $install 'README.md') -Raw) -eq $before) 'incomplete package leaves installation intact'
-    Write-Host "$count upgrade assertions passed."
+    Write-Host "All $count release upgrade assertions passed."
 } finally {Remove-Item $root -Recurse -Force}
