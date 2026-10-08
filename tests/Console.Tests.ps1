@@ -27,4 +27,28 @@ Assert (-not $output.Contains('hidden one')) 'panel can collapse again without d
 $hidden=New-GoConsoleRenderer -CompactReasoning -HideReasoning
 $output=& {& $hidden @{type='reasoning_delta';delta='secret'};& $hidden @{type='text_delta';delta='visible'};& $hidden @{type='assistant_end'}} 6>&1 | Out-String
 Assert (-not $output.Contains('secret') -and $output.Contains('visible')) 'HideReasoning suppresses compact panel'
+# A script invoked with & has a child scope, unlike pwsh -File. API module callbacks
+# must retain its private renderer helpers across that module boundary.
+$temporary=Join-Path ([IO.Path]::GetTempPath()) ('console-scope-'+[guid]::NewGuid()+'.ps1')
+$fixture=@'
+$ErrorActionPreference='Stop'
+Import-Module '__MODULE__' -Force
+. '__CONSOLE__'
+$state=@{}
+$render=New-GoConsoleRenderer -CompactReasoning -State $state
+$transport={param($Request) @{choices=@(@{finish_reason='stop';message=@{role='assistant';content='scope answer';reasoning_content="old one`nold two`nlast one`nlast two`nlast three"}})}}
+$agent=New-GoAgent -Workspace '__WORKSPACE__' -Transport $transport
+$answer=Invoke-GoAgent $agent 'scope request' -OnEvent $render
+if ($answer -ne 'scope answer' -or $agent.History.Count -ne 2) {throw 'Turn failed across child script scope'}
+foreach ($helper in @('tail','summary','live','toggle')) {if ($state[$helper] -isnot [scriptblock]) {throw "Missing bound helper: $helper"}}
+'@
+$fixture=$fixture.Replace('__MODULE__',(Join-Path $PSScriptRoot '../PSGoAgent.psd1').Replace("'","''")).Replace('__CONSOLE__',(Join-Path $PSScriptRoot '../Console.ps1').Replace("'","''")).Replace('__WORKSPACE__',$PSScriptRoot.Replace("'","''"))
+try {
+    Set-Content -LiteralPath $temporary -Value $fixture -Encoding utf8
+    $command="& '"+$temporary.Replace("'","''")+"'"
+    $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    $output=& (Get-Process -Id $PID).Path -NoProfile -EncodedCommand $encoded 2>&1 | Out-String
+    Assert ($LASTEXITCODE -eq 0 -and $output.Contains('scope answer')) 'API callback resolves helpers from child script scope'
+    Assert ($output.Contains('last three') -and -not $output.Contains('old one')) 'child-scope callback renders compact reasoning successfully'
+} finally {Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue}
 Write-Host "All $count console assertions passed."

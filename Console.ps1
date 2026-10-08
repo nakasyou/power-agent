@@ -2,6 +2,12 @@ function New-GoConsoleRenderer {
     param([switch]$HideReasoning,[switch]$CompactReasoning,[switch]$Plain,[hashtable]$State)
     if (-not $State) {$State=@{}}
     $state=$State
+    # GetNewClosure creates a dynamic module. Bind helpers as values so callbacks
+    # invoked by PSGoAgent can also resolve functions from a child script scope.
+    $state.tail=${function:Get-GoReasoningTail}
+    $state.summary=${function:Write-GoReasoningSummary}
+    $state.live=${function:Write-GoReasoningLive}
+    $state.toggle=${function:Switch-GoReasoningView}
     $state.section=$null;$state.tools=@{};$state.events=[Collections.Generic.List[object]]::new()
     $state.expanded=$false;$state.replaying=$false;$state.reasoning='';$state.reasonTop=0;$state.reasonRows=0
     $state.native=[bool]($CompactReasoning -and -not $Plain -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected)
@@ -12,12 +18,12 @@ function New-GoConsoleRenderer {
         if ($state.native -and -not $state.replaying -and [Console]::KeyAvailable) {
             $key=[Console]::ReadKey($true)
             if (($key.Key -eq 'Escape' -or ($key.Key -eq 'C' -and ($key.Modifiers -band [ConsoleModifiers]::Control))) -and $state.ContainsKey('cancellation') -and $state.cancellation) {$state.cancellation.Cancel()}
-            if ($key.Key -eq 'O' -and ($key.Modifiers -band [ConsoleModifiers]::Control)) {Switch-GoReasoningView $state}
+            if ($key.Key -eq 'O' -and ($key.Modifiers -band [ConsoleModifiers]::Control)) {& $state.toggle $state}
         }
         if ($event.type -eq 'ui_tick') {return}
         if (-not $state.replaying) {$state.events.Add($event)}
         if ($compact -and $state.section -eq 'reasoning' -and $event.type -in @('text_delta','assistant_end','tool_start','agent_error','retry')) {
-            if (-not $state.native -or $state.replaying) {Write-GoReasoningSummary $state}
+            if (-not $state.native -or $state.replaying) {& $state.summary $state}
             elseif ($state.expanded) {Write-Host ''}
             $state.section=$null
         }
@@ -37,7 +43,7 @@ function New-GoConsoleRenderer {
                         if ($state.expanded) {
                             if ($state.reasonRows -eq 0) {Write-Host '[reasoning · Ctrl+O 折りたたむ]' -ForegroundColor DarkGray;$state.reasonRows=1}
                             Write-Host $event.delta -NoNewline -ForegroundColor DarkGray
-                        } else {Write-GoReasoningLive $state}
+                        } else {& $state.live $state}
                     }
                     return
                 }
@@ -99,7 +105,7 @@ function Write-GoReasoningSummary {
         Write-Host $State.reasoning -ForegroundColor DarkGray
     } else {
         Write-Host '[reasoning · 末尾3行 · Ctrl+O 展開]' -ForegroundColor DarkGray
-        foreach ($line in Get-GoReasoningTail $State.reasoning) {Write-Host $line -ForegroundColor DarkGray}
+        foreach ($line in (& $State.tail $State.reasoning)) {Write-Host $line -ForegroundColor DarkGray}
     }
 }
 function Write-GoReasoningLive {
@@ -115,7 +121,7 @@ function Write-GoReasoningLive {
     for ($i=0;$i -lt $State.reasonRows;$i++) {Write-Host (' '*($width-1))}
     [Console]::SetCursorPosition(0,$State.reasonTop)
     Write-Host '[reasoning · Ctrl+O 展開]' -ForegroundColor DarkGray
-    $lines=@(Get-GoReasoningTail $State.reasoning $width)
+    $lines=@(& $State.tail $State.reasoning $width)
     foreach ($line in $lines) {Write-Host $line -ForegroundColor DarkGray}
     $State.reasonRows=1+$lines.Count
     $State.reasonTop=[Math]::Min($State.reasonTop,[Math]::Max(0,[Console]::BufferHeight-$State.reasonRows-1))
@@ -128,7 +134,7 @@ function Switch-GoReasoningView {
     $State.section=$null;$State.tools=@{};$State.reasoning='';$State.replaying=$true
     try {
         foreach ($event in $State.events) {$null=& $State.callback $event}
-        if ($State.section -eq 'reasoning') {Write-GoReasoningSummary $State}
+        if ($State.section -eq 'reasoning') {& $State.summary $State}
     } finally {$State.replaying=$false}
     # A running reasoning section continues below the repainted transcript.
     if ($State.section -eq 'reasoning') {
