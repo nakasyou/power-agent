@@ -13,6 +13,7 @@ param(
     [switch]$Resume,
     [string]$SessionDirectory = (Join-Path $PSScriptRoot 'sessions'),
     [switch]$Plain,
+    [string[]]$McpConfig,
     [ValidateRange(0,10)][int]$MaxRetries=2,
     [switch]$ListModels,
     [switch]$Login,
@@ -51,10 +52,13 @@ if ($Resume) {
 } else {
     $agent=New-GoAgent -Provider $Provider -ApiKey $ApiKey -Model $Model -Protocol $Protocol -Workspace $Workspace -Permission $Permission -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:$EnableImages -BaseUri $BaseUri -ReasoningEffort $ReasoningEffort -ThinkingBudget $ThinkingBudget -GlobalConfigDirectory $GlobalConfigDirectory
 }
+$mcpOptions=@{};if ($McpConfig) {$mcpOptions.ConfigPath=$McpConfig}
+Connect-GoMcp $agent @mcpOptions
+try {
 $agent | Add-Member -NotePropertyName MaxRetries -NotePropertyValue $MaxRetries -Force
 if (-not $SessionPath) {$SessionPath=Join-Path $SessionDirectory ($agent.Id+'.session.json')}
 Save-GoSession $agent $SessionPath
-if ($PSBoundParameters.ContainsKey('Prompt')) { Invoke-GoAgent -Agent $agent -Prompt $Prompt -SessionPath $SessionPath -NoStream:$NoStream -OnEvent $renderer | Out-Null; return }
+if ($PSBoundParameters.ContainsKey('Prompt')) { Invoke-GoAgent -Agent $agent -Prompt $Prompt -SessionPath $SessionPath -NoStream:$NoStream -OnEvent $renderer | Out-Null; Disconnect-GoMcp $agent; return }
 $inputHistory=[Collections.Generic.List[string]]::new()
 foreach ($entry in $agent.History) {if ($entry.kind -eq 'user') {$inputHistory.Add($entry.text)}}
 $failedPrompt=$null
@@ -125,7 +129,9 @@ while ($true) {
             }
             $resumed=Import-GoSession -ApiKey $ApiKey -Path $selection -GlobalConfigDirectory $GlobalConfigDirectory -Permission $Permission -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds
             Save-GoSession $agent $SessionPath
+            Disconnect-GoMcp $agent
             $agent=$resumed
+            Connect-GoMcp $agent @mcpOptions
             $agent | Add-Member -NotePropertyName MaxRetries -NotePropertyValue $MaxRetries -Force
             $SessionPath=[IO.Path]::GetFullPath($selection)
             $failedPrompt=$null
@@ -168,3 +174,6 @@ while ($true) {
     }
 }
 Save-GoSession $agent $SessionPath
+
+Disconnect-GoMcp $agent
+} finally {Disconnect-GoMcp $agent}
