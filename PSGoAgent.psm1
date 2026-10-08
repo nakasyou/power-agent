@@ -2,6 +2,12 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Get-GoVersion {
+    $version=Get-Variable -Name PowerAgentVersion -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if ($version) {return $version}
+    (Import-PowerShellDataFile (Join-Path $PSScriptRoot 'PSGoAgent.psd1')).ModuleVersion
+}
+
 function Set-GoModel {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Agent,[Parameter(Mandatory)][string]$Model,
@@ -340,7 +346,7 @@ function Connect-GoMcp {
                 $connection.Process=$process;$connection.Reader=$process.StandardOutput;$connection.ErrorTask=$process.StandardError.ReadToEndAsync()
             }
             $Agent.McpConnections.Add($connection)
-            $init=Invoke-GoMcpRequest $connection initialize @{protocolVersion='2025-03-26';capabilities=@{};clientInfo=@{name='power-agent';version='0.6.0'}}
+            $init=Invoke-GoMcpRequest $connection initialize @{protocolVersion='2025-03-26';capabilities=@{};clientInfo=@{name='power-agent';version=(Get-GoVersion)}}
             $connection.ProtocolVersion=$init.protocolVersion
             $null=Send-GoMcpMessage $connection @{jsonrpc='2.0';method='notifications/initialized';params=@{}} ([Threading.CancellationToken]::None) $null ''
             $params=@{};$cursors=[Collections.Generic.HashSet[string]]::new()
@@ -726,4 +732,4 @@ function Import-GoSession {
     $agent
 }
 
-Export-ModuleMember -Function Connect-GoMcp,Disconnect-GoMcp,Connect-GoCodex,Disconnect-GoCodex,Set-GoModel,Set-GoReasoning,New-GoAgent,Invoke-GoAgent,Save-GoSession,Import-GoSession,Get-GoModelCatalog,Get-GoTools,Invoke-GoTool
+Export-ModuleMember -Function Get-GoVersion,Connect-GoMcp,Disconnect-GoMcp,Connect-GoCodex,Disconnect-GoCodex,Set-GoModel,Set-GoReasoning,New-GoAgent,Invoke-GoAgent,Save-GoSession,Import-GoSession,Get-GoModelCatalog,Get-GoTools,Invoke-GoTool

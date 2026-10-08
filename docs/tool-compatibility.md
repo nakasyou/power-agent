@@ -27,6 +27,6 @@ File tools reject paths outside the workspace and symbolic links, unlike Pi's un
 
 Text read/edit loads files into memory; grep loads candidate lines into memory. Command output is spooled to disk. Direct runtime stderr is appended after normal output, so exact chronological ordering is not guaranteed.
 
-Chat/Messages/Responses reasoning and text SSE, tool output streaming, inline TUI, sessions, and model/reasoning selection are supported. Live steering, context compaction, branching, and tool extension APIs remain unsupported.
+Chat/Messages/Responses reasoning and text SSE, tool output streaming, inline TUI, sessions, and model/reasoning selection are supported. Live steering, context compaction, branching, and the Pi tool extension API remains unsupported. MCP tools are supported independently.
 
 Validation uses PowerShell 7.6.3/Linux with local tests and mock HTTP. Windows/macOS and live OpenCode Go/image-model connections remain unverified.

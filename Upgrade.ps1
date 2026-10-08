@@ -3,5 +3,4 @@
 param()
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'Upgrade.Core.ps1')
-$result=Invoke-GoUpgrade -InstallDirectory $PSScriptRoot
-Write-Host "Updated PSGoAgent to $($result.Version) in $($result.Directory). Restart the agent to use the update."
+Invoke-GoReleaseUpgrade -TargetPath (Join-Path $PSScriptRoot 'Power-Agent.ps1')

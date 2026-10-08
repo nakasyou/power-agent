@@ -4,20 +4,23 @@ A **PowerShell-only coding agent for OpenCode Go**, inspired by PSAI and Pi codi
 
 ## Getting started
 
+Download **Power-Agent.ps1** from the [latest GitHub Release](https://github.com/nakasyou/power-agent/releases/latest). Place that one file in its own directory and run it with PowerShell 7.2 or later. The runtime does not require PSScriptBuilder or any other module.
+
+
 Obtain an API key and subscription from [OpenCode Go](https://opencode.ai/docs/go/).
 
 ```powershell
 $env:OPENCODE_API_KEY = 'your-opencode-api-key'
-./Start-GoAgent.ps1 -Workspace C:\src\project
+./Power-Agent.ps1 -Workspace C:\src\project
 
 # Run a single request
-./Start-GoAgent.ps1 -Workspace . -Prompt 'Review the code and improve the README'
+./Power-Agent.ps1 -Workspace . -Prompt 'Review the code and improve the README'
 
 # Inspect without running commands or changing files
-./Start-GoAgent.ps1 -Workspace . -Permission ReadOnly -Prompt 'Explain the project'
+./Power-Agent.ps1 -Workspace . -Permission ReadOnly -Prompt 'Explain the project'
 
 # List available models
-./Start-GoAgent.ps1 -ListModels
+./Power-Agent.ps1 -ListModels
 ```
 
 Use `pwsh`, not Windows PowerShell 5.1. If Windows execution policy blocks scripts, follow your organization's policy before allowing execution.
@@ -36,11 +39,11 @@ Sessions are saved automatically to `sessions/<conversation-id>.session.json` at
 
 ```powershell
 # Resume the latest session for this workspace
-./Start-GoAgent.ps1 -Workspace C:\src\project -Resume
+./Power-Agent.ps1 -Workspace C:\src\project -Resume
 
 # Choose a session directory or a specific session file
-./Start-GoAgent.ps1 -SessionDirectory C:\agent-sessions
-./Start-GoAgent.ps1 -Resume -SessionPath ./sessions/work.session.json
+./Power-Agent.ps1 -SessionDirectory C:\agent-sessions
+./Power-Agent.ps1 -Resume -SessionPath ./sessions/work.session.json
 ```
 
 | Command | Action |
@@ -68,23 +71,23 @@ Session files restore the conversation ID, workspace, system instructions, model
 ```powershell
 ./Upgrade.ps1
 # No API key required
-./Start-GoAgent.ps1 -Upgrade
+./Power-Agent.ps1 -Upgrade
 ```
 
-The updater downloads and extracts `main` from `nakasyou/power-agent` on GitHub, then replaces distributed files in the script's own directory. Restart the agent afterward. The project selected with `-Workspace` is not the update destination.
+The updater fetches the latest GitHub Release, downloads `Power-Agent.ps1` and its SHA-256 checksum, validates the checksum, script syntax and version, then atomically replaces its own script file. Restart afterward. It does not download repository archives or update the project selected with `-Workspace`.
 
-Sessions, `.env`, `.git`, and custom files are preserved. Local changes to distributed scripts, README, docs, and tests are overwritten. Downloads are validated before installation; replaced files are restored if installation fails. Interactive upgrades save the current session first. On Windows, installed files are unblocked with `Unblock-File`; execution policy is not changed.
+Sessions, `.env`, `.git`, and other files are preserved. Local changes to the bundled script are overwritten. A previous script is restored if installation fails after replacement. Interactive upgrades save the current session first. On Windows, installed files are unblocked with `Unblock-File`; execution policy is not changed.
 
 ## Streaming and reasoning
 
 Chat, Messages, and Responses SSE protocols are supported. Reasoning and assistant text stream separately. Tool argument fragments are assembled and validated before execution; PowerShell tool output streams while the command runs.
 
 ```powershell
-./Start-GoAgent.ps1 -Model kimi-k3
-./Start-GoAgent.ps1 -HideReasoning
-./Start-GoAgent.ps1 -NoStream
-./Start-GoAgent.ps1 -Model gpt-6-luna -ReasoningEffort Medium
-./Start-GoAgent.ps1 -Model minimax-m2.7 -ThinkingBudget 2048 -MaxTokens 8192
+./Power-Agent.ps1 -Model kimi-k3
+./Power-Agent.ps1 -HideReasoning
+./Power-Agent.ps1 -NoStream
+./Power-Agent.ps1 -Model gpt-6-luna -ReasoningEffort Medium
+./Power-Agent.ps1 -Model minimax-m2.7 -ThinkingBudget 2048 -MaxTokens 8192
 ```
 
 `-HideReasoning` changes display only. `-NoStream` buffers model responses while retaining live tool output. Whether a model returns full reasoning, a summary, or no reasoning depends on the provider. Signatures and encrypted reasoning are retained for replay, but never displayed. Thinking budgets must be at least 1024 and less than `MaxTokens`.
@@ -106,8 +109,8 @@ The default model is `glm-5.3-flash`. Known models automatically select their pr
 The base URL is `https://opencode.ai/zen/go/v1`. Each request includes a stable `x-opencode-session` conversation ID. Messages also includes `x-api-key` and `anthropic-version`.
 
 ```powershell
-./Start-GoAgent.ps1 -ListModels
-./Start-GoAgent.ps1 -Model custom-model -Protocol Chat
+./Power-Agent.ps1 -ListModels
+./Power-Agent.ps1 -Model custom-model -Protocol Chat
 ```
 
 `-BaseUri` supports HTTPS and loopback HTTP for tests.
@@ -154,7 +157,7 @@ A named mutex serializes `edit`/`write` on the same path. Validated changes are 
 `read` detects PNG/JPEG/GIF/WebP from file contents. Enable API image attachments with `-EnableImages` and an image-capable model; otherwise only an explanatory text result is sent.
 
 ```powershell
-./Start-GoAgent.ps1 -Model gpt-6-luna -EnableImages -Prompt 'Read screenshot.png and describe it'
+./Power-Agent.ps1 -Model gpt-6-luna -EnableImages -Prompt 'Read screenshot.png and describe it'
 ```
 
 Images are limited to 5 MiB and sent at their original size. Automatic resizing and BMP conversion are not implemented. Image support depends on the model/provider.
@@ -182,7 +185,7 @@ File tools are confined to the workspace and reject symbolic links/reparse point
 | `ReadOnly` | Expose only read/grep/find/ls; deny mutation and commands |
 | `Auto` | Execute without confirmation; select explicitly |
 
-A root `AGENTS.md` is included in initial instructions. Nested instruction discovery is not implemented.
+Global and repository/workspace `AGENTS.md` files contribute initial instructions. Nested directory instructions accompany scoped file/search results.
 
 ## Module usage
 
@@ -206,7 +209,7 @@ Each agent owns independent history. Use `-Instructions` for additional instruct
 
 Defaults: 30 model turns per request, 8192 output tokens, and a 120-second HTTP timeout. Configure `-MaxTurns`, `-MaxTokens`, and `-TimeoutSeconds`. Text and command output use 2000-line/50-KiB limits; search and edit diffs are bounded around 50 KiB. Token-limited responses are treated as incomplete.
 
-MCP, plugins, the complete Pi shortcut set, automatic context compaction, branching, and background execution are not implemented. Use `/new` for long conversations. Completed file changes are not automatically rolled back. See [tool compatibility](docs/tool-compatibility.md).
+Plugins, the complete Pi shortcut set, automatic context compaction, branching, and background execution are not implemented. MCP supports tools over stdio and Streamable HTTP; see the MCP section for limits. Use `/new` for long conversations. Completed file changes are not automatically rolled back. See [tool compatibility](docs/tool-compatibility.md).
 
 Run checks without additional test dependencies:
 
@@ -221,7 +224,7 @@ pwsh -NoProfile -File ./tests/Console.Tests.ps1
 pwsh -NoProfile -File ./tests/Retry.Tests.ps1
 ```
 
-Validated on PowerShell 7.6.3/Linux with 262 assertions and three protocol HTTP integration scenarios. Coverage includes tools, edits/patches, locking, images, UTF-8 boundaries, SSE, retries, session persistence, protocol/model changes, and renderer callback scope. Native terminal checks covered reasoning expansion, model selection, and multiline input. Live OpenCode Go, Windows, and macOS execution remain unverified.
+Validated on PowerShell 7.6.3/Linux with the complete test suite and protocol HTTP integration scenarios, including provider/auth, instructions/skills, MCP, search, release upgrades and isolated single-file execution. Coverage includes tools, edits/patches, locking, images, UTF-8 boundaries, SSE, retries, session persistence, protocol/model changes, and renderer callback scope. Native terminal checks covered reasoning expansion, model selection, and multiline input. Live OpenCode Go, Windows, and macOS execution remain unverified.
 
 ## References
 
@@ -243,10 +246,10 @@ Local instructions are read from AGENTS.md files between the nearest Git root an
 
 ```powershell
 $env:OPENAI_API_KEY = 'your-key'
-./Start-GoAgent.ps1 -Provider OpenAI -Model gpt-4.1
-./Start-GoAgent.ps1 -Provider OpenAI -Model custom -BaseUri https://provider.example/v1
-./Start-GoAgent.ps1 -Provider OpenAI -Model local -BaseUri http://localhost:1234/v1
-./Start-GoAgent.ps1 -Provider OpenAI -Model gpt-4.1 -Protocol Responses
+./Power-Agent.ps1 -Provider OpenAI -Model gpt-4.1
+./Power-Agent.ps1 -Provider OpenAI -Model custom -BaseUri https://provider.example/v1
+./Power-Agent.ps1 -Provider OpenAI -Model local -BaseUri http://localhost:1234/v1
+./Power-Agent.ps1 -Provider OpenAI -Model gpt-4.1 -Protocol Responses
 ```
 
 OpenAI-compatible providers default to Chat and accept arbitrary model names. Select Responses explicitly if supported. Use `OPENAI_API_KEY` or `-ApiKey`; unauthenticated loopback endpoints are allowed. OpenCode-specific headers are not sent to these providers. Provider/endpoint settings are saved in sessions; credentials are never saved there. Both API-key environment variables are excluded from command child processes.
@@ -254,10 +257,10 @@ OpenAI-compatible providers default to Chat and accept arbitrary model names. Se
 ## Codex device-code login
 
 ```powershell
-./Start-GoAgent.ps1 -Login
+./Power-Agent.ps1 -Login
 # Visit the displayed OpenAI URL and approve the displayed code.
-./Start-GoAgent.ps1 -Provider Codex -Model gpt-5.3-codex
-./Start-GoAgent.ps1 -Logout
+./Power-Agent.ps1 -Provider Codex -Model gpt-5.3-codex
+./Power-Agent.ps1 -Logout
 ```
 
 Enable device-code login in your ChatGPT settings if required. Codex uses ChatGPT subscription authentication rather than an OpenAI API key, requires streaming Responses, and automatically refreshes expiring tokens. Credentials are stored separately under the global config directory, protected with Windows user DPAPI or Unix owner-only permissions. Tokens never enter session files. Device login and token refresh are verified with mocks; live account authorization must be completed by the user.
@@ -280,10 +283,27 @@ Only configure trusted servers: stdio commands launch when connecting. Tools are
 ## Web search
 
 ```powershell
-./Start-GoAgent.ps1 -Provider OpenAI -Model gpt-4.1 -EnableWebSearch
-./Start-GoAgent.ps1 -Provider OpenAI -Model custom-chat -EnableWebSearch -WebSearchModel search-model -BaseUri https://provider.example/v1
+./Power-Agent.ps1 -Provider OpenAI -Model gpt-4.1 -EnableWebSearch
+./Power-Agent.ps1 -Provider OpenAI -Model custom-chat -EnableWebSearch -WebSearchModel search-model -BaseUri https://provider.example/v1
 ```
 
 The `web_search` function tool delegates to the same provider's Responses endpoint with the native `web_search` tool. It streams the summary and returns source titles/URLs as text and structured data without modifying conversation history. The provider and search model must support Responses native web search; generic Chat-only endpoints cannot supply this capability. Search settings persist in sessions.
 
 Tool and command output is also collapsed to its last three lines by default. Ctrl+T expands/collapses tool panels while running or afterward. Reasoning uses Ctrl+O independently. Full streamed output remains available for expansion; saved sessions retain canonical tool results and full-log paths for truncated commands.
+
+
+## Building and releasing
+
+Source development uses `Start-GoAgent.ps1` and `PSGoAgent.psd1`. Build the release artifact with PSScriptBuilder 1.2.0:
+
+```powershell
+Install-Module PSScriptBuilder -RequiredVersion 1.2.0 -Scope CurrentUser
+./scripts/Build.ps1
+./scripts/Test.ps1
+```
+
+The builder collects functions from the project using PSScriptBuilder and creates `dist/Power-Agent.ps1`, including the CLI and updater. Standalone tests copy the bundle into an otherwise empty directory and verify version reporting, API requests, tool execution and automatic session persistence.
+
+In GitHub Actions, select **Release → Run workflow**, then choose `patch`, `minor`, or `major`. The workflow increments the manifest version, builds the single script, runs all tests, generates SHA256SUMS.txt, commits the version, creates a tag and publishes both assets to GitHub Releases. Release jobs are serialized; version changes and tags are pushed atomically. The repository must allow the workflow's token to write contents. Failed checks prevent tagging and publication.
+
+If migrating from the older multi-file distribution, run `./Upgrade.ps1` to install `Power-Agent.ps1` in that directory, then use the bundled entrypoint. All future bundled updates use `./Power-Agent.ps1 -Upgrade` or `/upgrade`.

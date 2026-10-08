@@ -16,6 +16,7 @@ param(
     [string[]]$McpConfig,
     [ValidateRange(0,10)][int]$MaxRetries=2,
     [switch]$ListModels,
+    [switch]$Version,
     [switch]$Login,
     [switch]$Logout,
     [switch]$Upgrade,
@@ -32,9 +33,18 @@ param(
     [string]$BaseUri=''
 )
 $ErrorActionPreference='Stop'
-if ($Upgrade) { & (Join-Path $PSScriptRoot 'Upgrade.ps1'); return }
-Import-Module (Join-Path $PSScriptRoot 'PSGoAgent.psd1') -Force
-. (Join-Path $PSScriptRoot 'Console.ps1')
+$bundled=[bool](Get-Variable -Name PowerAgentBundle -Scope Script -ValueOnly -ErrorAction SilentlyContinue)
+if (-not $bundled) {
+    Import-Module (Join-Path $PSScriptRoot 'PSGoAgent.psd1') -Force
+    . (Join-Path $PSScriptRoot 'Console.ps1')
+    . (Join-Path $PSScriptRoot 'Upgrade.Core.ps1')
+}
+if ($Version) {Get-GoVersion;return}
+if ($Upgrade) {
+    $target=if ($bundled) {$script:PowerAgentSelfPath} else {Join-Path $PSScriptRoot 'Power-Agent.ps1'}
+    Invoke-GoReleaseUpgrade -TargetPath $target
+    return
+}
 $consoleState=@{}
 $renderer=New-GoConsoleRenderer -HideReasoning:$HideReasoning -CompactReasoning -CompactTools -Plain:$Plain -State $consoleState
 if ($ListModels) { Get-GoModelCatalog; return }
@@ -76,7 +86,8 @@ while ($true) {
     if ($line -eq '/upgrade') {
         try {
             if ($SessionPath) { Save-GoSession $agent $SessionPath }
-            & (Join-Path $PSScriptRoot 'Upgrade.ps1')
+            $target=if ($bundled) {$script:PowerAgentSelfPath} else {Join-Path $PSScriptRoot 'Power-Agent.ps1'}
+            Invoke-GoReleaseUpgrade -TargetPath $target
             break
         } catch { Write-Host $_.Exception.Message -ForegroundColor Red }
         continue

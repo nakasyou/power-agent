@@ -6,3 +6,5 @@ sessions/
 .power-agent/
 
 codex-auth.json
+
+dist/
