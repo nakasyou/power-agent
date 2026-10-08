@@ -27,6 +27,17 @@ Assert (-not $output.Contains('hidden one')) 'panel can collapse again without d
 $hidden=New-GoConsoleRenderer -CompactReasoning -HideReasoning
 $output=& {& $hidden @{type='reasoning_delta';delta='secret'};& $hidden @{type='text_delta';delta='visible'};& $hidden @{type='assistant_end'}} 6>&1 | Out-String
 Assert (-not $output.Contains('secret') -and $output.Contains('visible')) 'HideReasoning suppresses compact panel'
+$toolState=@{}
+$toolRenderer=New-GoConsoleRenderer -CompactTools -Plain -State $toolState
+$toolOutput=& {
+    & $toolRenderer @{type='tool_start';name='powershell';callId='tool-1'}
+    & $toolRenderer @{type='tool_output_delta';callId='tool-1';delta="hidden tool line`nline two`nline three`nline four"}
+    & $toolRenderer @{type='tool_end';callId='tool-1';text='canonical result';isError=$false;details=@{exitCode=0}}
+} 6>&1 | Out-String
+Assert (-not $toolOutput.Contains('hidden tool line') -and $toolOutput.Contains('line four')) 'tool panel displays only the output tail'
+$toolState.toolsExpanded=$true
+$expanded=Write-GoToolSummary $toolState $toolState.toolPanels['tool-1'] 6>&1 | Out-String
+Assert ($expanded.Contains('hidden tool line') -and $expanded.Contains('line four')) 'tool expansion retains full streamed output'
 # A script invoked with & has a child scope, unlike pwsh -File. API module callbacks
 # must retain its private renderer helpers across that module boundary.
 $temporary=Join-Path ([IO.Path]::GetTempPath()) ('console-scope-'+[guid]::NewGuid()+'.ps1')

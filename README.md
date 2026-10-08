@@ -285,3 +285,5 @@ Only configure trusted servers: stdio commands launch when connecting. Tools are
 ```
 
 The `web_search` function tool delegates to the same provider's Responses endpoint with the native `web_search` tool. It streams the summary and returns source titles/URLs as text and structured data without modifying conversation history. The provider and search model must support Responses native web search; generic Chat-only endpoints cannot supply this capability. Search settings persist in sessions.
+
+Tool and command output is also collapsed to its last three lines by default. Ctrl+T expands/collapses tool panels while running or afterward. Reasoning uses Ctrl+O independently. Full streamed output remains available for expansion; saved sessions retain canonical tool results and full-log paths for truncated commands.
