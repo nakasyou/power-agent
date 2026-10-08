@@ -476,6 +476,7 @@ function Invoke-GoPowerShell($Agent,$Arguments,[Threading.CancellationToken]$Can
     $command='[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $ErrorActionPreference="Stop"; $PSNativeCommandUseErrorActionPreference=$false; try { & { '+$Arguments.command+' } *>&1 | Out-String -Stream | ForEach-Object { [Console]::WriteLine($_) }; if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }; if (-not $?) { exit 1 } } catch { [Console]::WriteLine($_.ToString()); exit 1 }'
     $start.ArgumentList.Add([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command)))
     $null=$start.Environment.Remove('OPENCODE_API_KEY')
+    $null=$start.Environment.Remove('OPENAI_API_KEY')
     $start.Environment['PI_SESSION_ID']=$Agent.Id;$start.Environment['PI_MODEL_ID']=$Agent.Model;$start.Environment['PI_MODEL_PROVIDER']='opencode-go'
     $process=[Diagnostics.Process]::new();$process.StartInfo=$start
     $output=[IO.FileStream]::new($outputPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite,1)

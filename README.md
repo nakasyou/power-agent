@@ -238,3 +238,15 @@ MIT license. See [LICENSE](LICENSE).
 Global instructions live in `~/.config/power-agent/AGENTS.md`; global skills live in its `skills/<name>/SKILL.md` directory. Change this root with `-GlobalConfigDirectory`.
 
 Local instructions are read from AGENTS.md files between the nearest Git root and the workspace. Nested AGENTS.md instructions accompany file/search results only for their directory scope. Local skills in `.agents/skills` and `.power-agent/skills` override global skills with the same name. Skills use optional `name` and `description` frontmatter, appear in the system catalog, and are loaded on demand with the `skill` tool. Resuming a session rediscovers installed skills.
+
+## OpenAI-compatible providers
+
+```powershell
+$env:OPENAI_API_KEY = 'your-key'
+./Start-GoAgent.ps1 -Provider OpenAI -Model gpt-4.1
+./Start-GoAgent.ps1 -Provider OpenAI -Model custom -BaseUri https://provider.example/v1
+./Start-GoAgent.ps1 -Provider OpenAI -Model local -BaseUri http://localhost:1234/v1
+./Start-GoAgent.ps1 -Provider OpenAI -Model gpt-4.1 -Protocol Responses
+```
+
+OpenAI-compatible providers default to Chat and accept arbitrary model names. Select Responses explicitly if supported. Use `OPENAI_API_KEY` or `-ApiKey`; unauthenticated loopback endpoints are allowed. OpenCode-specific headers are not sent to these providers. Provider/endpoint settings are saved in sessions; credentials are never saved there. Both API-key environment variables are excluded from command child processes.
