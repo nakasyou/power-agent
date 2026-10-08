@@ -17,7 +17,7 @@ $job=Start-Job -ArgumentList $port,$ready -ScriptBlock {
                 if (-not (($request | ConvertTo-Json -Depth 100).Contains('Bundle café'))) {throw 'Tool result missing from next request'}
                 $response=@{choices=@(@{finish_reason='stop';message=@{role='assistant';content='Bundle completed'}})}
             }
-            $ctx.Response.ContentType='application/json';$bytes=[Text.Encoding]::UTF8.GetBytes(($response | ConvertTo-Json -Depth 100 -Compress));$ctx.Response.OutputStream.Write($bytes,0,$bytes.Length);$ctx.Response.Close()
+            $ctx.Response.ContentType='application/json';$bytes=[Text.Encoding]::UTF8.GetBytes(($response | ConvertTo-Json -Depth 100 -Compress));$ctx.Response.ContentLength64=$bytes.Length;$ctx.Response.OutputStream.Write($bytes,0,$bytes.Length);$ctx.Response.Close()
         }
     } finally {$listener.Close()}
 }

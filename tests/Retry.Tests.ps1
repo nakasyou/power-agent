@@ -24,7 +24,7 @@ try {
                     $context.Response.ContentType='application/json'
                     if ($i -eq 0 -and $case.status -ne 200) {$context.Response.StatusCode=$case.status;$context.Response.AddHeader('Retry-After','1');$json='{"error":"mock"}'}
                     else {$json='{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Saved successfully"}}]}'}
-                    $bytes=[Text.Encoding]::UTF8.GetBytes($json);$context.Response.OutputStream.Write($bytes,0,$bytes.Length);$context.Response.Close()
+                    $bytes=[Text.Encoding]::UTF8.GetBytes($json);$context.Response.ContentLength64=$bytes.Length;$context.Response.OutputStream.Write($bytes,0,$bytes.Length);$context.Response.Close()
                 }
                 @{requests=$requests.ToArray()}
             } finally {$listener.Close()}

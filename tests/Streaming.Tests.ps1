@@ -39,7 +39,7 @@ function Start-Server([string]$Protocol,[string]$Scenario='Normal') {
                 if ($scenario -eq 'Json') {
                     $context.Response.ContentType='application/json'
                     $bytes=[Text.Encoding]::UTF8.GetBytes('{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"JSON complete","reasoning_content":"JSON reasoning"}}]}')
-                    $context.Response.OutputStream.Write($bytes,0,$bytes.Length);$context.Response.Close();continue
+                    $context.Response.ContentLength64=$bytes.Length;$context.Response.OutputStream.Write($bytes,0,$bytes.Length);$context.Response.Close();continue
                 }
                 $context.Response.ContentType='text/event-stream; charset=utf-8';$context.Response.SendChunked=$true
                 $first=if ($scenario -eq 'Retry') {$step -eq 1} else {$step -eq 0}

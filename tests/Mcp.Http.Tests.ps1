@@ -18,7 +18,7 @@ $job=Start-Job -ArgumentList $port,$ready -ScriptBlock {
             }
             $json=@{jsonrpc='2.0';id=$request.id;result=$result} | ConvertTo-Json -Depth 30 -Compress
             if ($request.method -eq 'tools/call') {$ctx.Response.ContentType='text/event-stream';$json="data: $json`n`n"} else {$ctx.Response.ContentType='application/json'}
-            $bytes=[Text.Encoding]::UTF8.GetBytes($json);$ctx.Response.OutputStream.Write($bytes,0,$bytes.Length);$ctx.Response.Close()
+            $bytes=[Text.Encoding]::UTF8.GetBytes($json);$ctx.Response.ContentLength64=$bytes.Length;$ctx.Response.OutputStream.Write($bytes,0,$bytes.Length);$ctx.Response.Close()
         }
     } finally {$listener.Close()}
 }
