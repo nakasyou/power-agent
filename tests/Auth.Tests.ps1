@@ -19,6 +19,7 @@ try {
     $agent=New-GoAgent -Provider Codex -Model gpt-5.3-codex -GlobalConfigDirectory $root -Workspace $PSScriptRoot
     $request=& $module {param($a) New-GoRequest $a} $agent
     if ($request.Uri -ne 'https://chatgpt.com/backend-api/codex/responses' -or $request.Headers['chatgpt-account-id'] -ne 'test-account' -or -not $request.Body.stream -or $request.Body.ContainsKey('max_output_tokens')) {throw 'Codex routing/body incorrect'}
+    if ($request.Headers.Accept -ne 'text/event-stream') {throw 'Codex SSE Accept header missing'}
     $session=Join-Path $root 'state.session.json';Save-GoSession $agent $session
     if ((Get-Content $session -Raw).Contains('private-refresh') -or (Get-Content $session -Raw).Contains($jwt)) {throw 'Tokens leaked into session'}
     $credential=& $module {param($dir) Read-GoCodexCredential $dir} $root

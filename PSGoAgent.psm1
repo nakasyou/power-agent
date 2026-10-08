@@ -11,17 +11,23 @@ function Get-GoVersion {
 function Set-GoModel {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Agent,[Parameter(Mandatory)][string]$Model,
-        [ValidateSet('Auto','Chat','Messages','Responses')][string]$Protocol='Auto')
+        [ValidateSet('Auto','Chat','Messages','Responses')][string]$Protocol='Auto',
+        [ValidateSet('OpenCodeGo','OpenAI','Codex')][string]$Provider='')
     if ($Agent.Busy) {throw 'Cannot change models during an active turn.'}
-    $Model=$Model -replace '^opencode-go/',''
+    if (-not $Provider) {$Provider=$Agent.Provider}
+    if ($Model -match '^(OpenCodeGo|opencode-go|OpenAI|Codex)/(.+)$') {
+        $Provider=if ($Matches[1] -eq 'opencode-go') {'OpenCodeGo'} else {$Matches[1]};$Model=$Matches[2]
+    } elseif ($Model -match '^(.+) \((OpenCode Go|OpenAI|Codex)\)$') {
+        $Provider=if ($Matches[2] -eq 'OpenCode Go') {'OpenCodeGo'} else {$Matches[2]};$Model=$Matches[1]
+    }
     if (-not $Model.Trim()) {throw 'Model cannot be empty.'}
     if ($Protocol -eq 'Auto') {
-        $entry=@(Get-GoModelCatalog | Where-Object Model -EQ $Model)
-        if ($Agent.Provider -eq 'Codex') {$Protocol='Responses'} elseif ($Agent.Provider -ne 'OpenCodeGo') {$Protocol='Chat'} elseif ($entry.Count -ne 1) {throw 'Unknown model. Use /model NAME Chat|Messages|Responses.'} else {$Protocol=$entry[0].Protocol}
+        $entry=@(Get-GoModelCatalog | Where-Object { $_.Model -eq $Model -and $_.Provider -eq $Provider })
+        if ($Provider -eq 'Codex') {$Protocol='Responses'} elseif ($Provider -ne 'OpenCodeGo') {$Protocol='Chat'} elseif ($entry.Count -ne 1) {throw 'Unknown model. Use /model NAME Chat|Messages|Responses.'} else {$Protocol=$entry[0].Protocol}
     }
-    if ($Agent.Provider -eq 'OpenAI' -and $Protocol -eq 'Messages') {throw 'OpenAI-compatible providers support Chat or Responses.'}
-    if ($Agent.Provider -eq 'Codex' -and $Protocol -ne 'Responses') {throw 'Codex requires Responses.'}
-    if ($Agent.Model -eq $Model -and $Agent.Protocol -eq $Protocol) {return}
+    if ($Provider -eq 'OpenAI' -and $Protocol -eq 'Messages') {throw 'OpenAI-compatible providers support Chat or Responses.'}
+    if ($Provider -eq 'Codex' -and $Protocol -ne 'Responses') {throw 'Codex requires Responses.'}
+    if ($Agent.Model -eq $Model -and $Agent.Protocol -eq $Protocol -and $Agent.Provider -eq $Provider) {return}
     # Provider reasoning signatures and response IDs cannot be reused by another model.
     # Convert from canonical text/calls without replaying tools or altering their results.
     $converted=[Collections.Generic.List[object]]::new()
@@ -52,6 +58,13 @@ function Set-GoModel {
         $converted.Add(@{Message=$message;Raw=$raw})
     }
     foreach ($change in $converted) {$change.Message.raw=$change.Raw}
+    if ($Agent.Provider -ne $Provider) {
+        # Never send a provider's explicit API key to another service.
+        $Agent.ApiKey=$null
+        $Agent.BaseUri=if ($Provider -eq 'Codex') {'https://chatgpt.com/backend-api/codex'} elseif ($Provider -eq 'OpenAI') {'https://api.openai.com/v1'} else {'https://opencode.ai/zen/go/v1'}
+        $Agent.Provider=$Provider;$Agent.WebSearchModel=$Model
+        if ($Provider -eq 'OpenCodeGo') {$Agent.EnableWebSearch=$false}
+    }
     $Agent.Model=$Model;$Agent.Protocol=$Protocol
     # Model-specific reasoning settings must be chosen explicitly for the new model.
     $Agent.ReasoningEffort='Default';$Agent.ThinkingBudget=0
@@ -93,7 +106,13 @@ function Get-GoModelCatalog {
         Responses = @('grok-4.7','grok-4.6','gpt-6-luna','gpt-5.6-luna','muse-spark-1.3-contributor','muse-spark-1.2-contributor')
     }
     foreach ($protocol in $catalog.Keys) {
-        foreach ($id in $catalog[$protocol]) { [pscustomobject]@{ Model=$id; Protocol=$protocol } }
+        foreach ($id in $catalog[$protocol]) { [pscustomobject]@{ Model=$id; Provider='OpenCodeGo'; Label="$id (OpenCode Go)"; Protocol=$protocol } }
+    }
+    foreach ($id in @('gpt-6.1-sol','gpt-6-sol','gpt-6-luna','gpt-5.6-sol','gpt-5.6-luna','gpt-5.3-codex','gpt-5.2-codex','gpt-5.1-codex-max','gpt-5.1-codex-mini')) {
+        [pscustomobject]@{Model=$id;Provider='Codex';Label="$id (Codex)";Protocol='Responses'}
+    }
+    foreach ($id in @('gpt-6.1-sol','gpt-6-sol','gpt-6-luna','gpt-4.1','gpt-4.1-mini')) {
+        [pscustomobject]@{Model=$id;Provider='OpenAI';Label="$id (OpenAI)";Protocol='Chat'}
     }
 }
 
@@ -448,7 +467,7 @@ function New-GoAgent {
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'Workspace must be a directory.' }
     $Model = $Model -replace '^opencode-go/', ''
     if ($Protocol -eq 'Auto') {
-        $entry = @(Get-GoModelCatalog | Where-Object Model -EQ $Model)
+        $entry = @(Get-GoModelCatalog | Where-Object { $_.Model -eq $Model -and $_.Provider -eq $Provider })
         if ($Provider -eq 'Codex') {$Protocol='Responses'} elseif ($Provider -eq 'OpenAI') {$Protocol='Chat'} elseif ($entry.Count -ne 1) { throw "Unknown model '$Model'. Specify -Protocol Chat, Messages or Responses." } else {$Protocol=$entry[0].Protocol}
     }
     if (-not $BaseUri) {$BaseUri=if ($Provider -eq 'Codex') {'https://chatgpt.com/backend-api/codex'} elseif ($Provider -eq 'OpenAI') {'https://api.openai.com/v1'} else {'https://opencode.ai/zen/go/v1'}}
@@ -516,6 +535,7 @@ function New-GoRequest($Agent,[bool]$Stream=$false) {
     }
     if ($key) {$headers.Authorization="Bearer $key"}
     if ($Agent.Provider -eq 'OpenCodeGo') {$headers['x-opencode-session']=$Agent.Id}
+    if ($Stream -or $Agent.Provider -eq 'Codex') {$headers.Accept='text/event-stream'}
     $body = @{model=$Agent.Model;stream=$Stream}
     $pendingImages=[Collections.Generic.List[object]]::new()
     switch ($Agent.Protocol) {

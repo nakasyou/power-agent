@@ -19,5 +19,17 @@ try {
     if ($local.Protocol -ne 'Chat') {throw 'Compatible automatic routing failed'}
     $failed=$false;try {New-GoAgent -Provider OpenAI -Protocol Messages -Workspace $root | Out-Null} catch {$failed=$true}
     if (-not $failed) {throw 'Invalid provider protocol accepted'}
+    $catalog=@(Get-GoModelCatalog)
+    if (@($catalog | Where-Object Model -EQ 'gpt-6-luna').Count -lt 2 -or -not ($catalog.Label -contains 'gpt-6.1-sol (Codex)')) {throw 'Unified catalog missing provider labels or Codex models'}
+    $switch=New-GoAgent -Model gpt-6-luna -ApiKey 'go-only-secret' -Workspace $root
+    Set-GoModel $switch 'gpt-6-luna (Codex)'
+    if ($switch.Provider -ne 'Codex' -or $switch.Protocol -ne 'Responses' -or $switch.ApiKey -or $switch.BaseUri -ne 'https://chatgpt.com/backend-api/codex') {throw 'Same-model provider switch or credential isolation failed'}
+    Set-GoModel $switch Codex/gpt-6.1-sol
+    if ($switch.Model -ne 'gpt-6.1-sol') {throw 'Qualified Codex model selection failed'}
+    Save-GoSession $switch (Join-Path $root 'switch.session.json')
+    $restored=Import-GoSession (Join-Path $root 'switch.session.json')
+    if ($restored.Provider -ne 'Codex' -or $restored.Model -ne 'gpt-6.1-sol') {throw 'Switched provider did not persist'}
+    Set-GoModel $switch OpenCodeGo/gpt-6-luna
+    if ($switch.Provider -ne 'OpenCodeGo' -or $switch.Protocol -ne 'Responses') {throw 'Go routing ambiguous in unified catalog'}
     Write-Host 'PASS: OpenAI Chat/Responses routing, headers, key isolation, persistence and model changes'
 } finally {Remove-Item $root -Recurse -Force}
