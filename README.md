@@ -322,3 +322,13 @@ Model availability depends on the account and provider; catalog entries are not 
 entitlement check. Codex SSE requests explicitly negotiate `text/event-stream`.
 SSE streams with missing or generic gateway Content-Type headers are validated by
 the SSE parser; HTML pages are rejected. Unexpected response formats report the provider, endpoint and Content-Type.
+
+### Change permissions during a session
+
+Use `/permission` to select a mode, or `/permission Ask`, `/permission ReadOnly`,
+and `/permission Auto` to change it directly. `Ask` requests approval for commands,
+file changes and MCP tools; `ReadOnly` disables those tools; `Auto` executes them
+without approval. Changes apply to subsequent tool calls without clearing the
+conversation. Permissions are not restored from saved sessions: resume uses `Ask`
+unless a mode is explicitly supplied with `-Permission`. In plain mode, `/permission`
+shows the current mode and command usage.

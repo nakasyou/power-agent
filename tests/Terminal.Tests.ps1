@@ -64,6 +64,22 @@ try {
     $list=@(Get-GoSessionList $sessionDir $root)
     Assert ($list.Count -eq 1 -and $list[0].Title -eq 'Inspect the café project') 'session list filters workspace and invalid files'
     Assert (-not ((Get-Content $path -Raw).Contains('Authorization'))) 'session contains no credentials'
+    $permissions=New-GoAgent -Workspace $root
+    $permissions.History.Add(@{kind='user';text='keep conversation'})
+    Set-GoPermission $permissions readonly
+    Assert ($permissions.Permission -eq 'ReadOnly' -and $permissions.History.Count -eq 1) 'permission changes preserve conversation and normalize names'
+    Assert (@(Get-GoTools $permissions | Where-Object name -In @('write','edit','powershell')).Count -eq 0) 'ReadOnly permission removes command and mutation tools'
+    $blocked=Invoke-GoTool $permissions write @{path='permission-blocked.txt';content='blocked'}
+    Assert ($blocked.isError -and -not (Test-Path (Join-Path $root 'permission-blocked.txt'))) 'ReadOnly rejects mutation calls after mode change'
+    Set-GoPermission $permissions Auto
+    $written=Invoke-GoTool $permissions write @{path='permission-allowed.txt';content='allowed'}
+    Assert (-not $written.isError -and (Test-Path (Join-Path $root 'permission-allowed.txt'))) 'Auto applies immediately to subsequent tool calls'
+    $permissions.Busy=$true;$denied=$false
+    try {Set-GoPermission $permissions Ask} catch {$denied=$true}
+    Assert ($denied -and $permissions.Permission -eq 'Auto') 'active turn cannot change permissions'
+    $permissions.Busy=$false;$denied=$false
+    try {Set-GoPermission $permissions invalid} catch {$denied=$true}
+    Assert ($denied -and $permissions.Permission -eq 'Auto') 'invalid permission leaves current mode intact'
     # Exercise actual CLI command routing with redirected input and no API requests.
     $start=[Diagnostics.ProcessStartInfo]::new((Get-Process -Id $PID).Path)
     $start.UseShellExecute=$false;$start.RedirectStandardInput=$true;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
@@ -72,12 +88,14 @@ try {
     $process=[Diagnostics.Process]::new();$process.StartInfo=$start
     try {
         $null=$process.Start();$output=$process.StandardOutput.ReadToEndAsync();$errors=$process.StandardError.ReadToEndAsync()
-        foreach ($line in @('/model gpt-6-luna','/reasoning High','/save','/new',"/resume $path",'/resume','/model unknown','/reasoning Invalid','/exit')) {$process.StandardInput.WriteLine($line)}
+        foreach ($line in @('/model gpt-6-luna','/reasoning High','/permission','/permission Auto','/permission invalid','/save','/new',"/resume $path",'/resume','/model unknown','/reasoning Invalid','/exit')) {$process.StandardInput.WriteLine($line)}
         $process.StandardInput.Close()
         if (-not $process.WaitForExit(15000)) {$process.Kill($true);throw 'CLI timeout'}
         $text=$output.GetAwaiter().GetResult();$errorText=$errors.GetAwaiter().GetResult()
         Assert ($process.ExitCode -eq 0 -and -not $errorText) 'CLI session commands complete without process errors'
+        Assert ($text.Contains('Permission: Auto') -and $text.Contains('/permission Ask|ReadOnly|Auto')) 'CLI permission commands report current mode and apply changes'
         $saved=Import-GoSession $path
+        Assert ($saved.Permission -eq 'Ask') 'resume does not restore Auto selected by permission command'
         Assert ($saved.Model -eq 'gpt-6-luna' -and $saved.ReasoningEffort -eq 'High') 'CLI persists model and effort changes'
         Assert ($saved.History.Count -eq 3) 'CLI /new preserves original and /resume restores it'
         Assert (@(Get-ChildItem $sessionDir -Filter '*.session.json').Count -eq 4) 'CLI /new saves to a separate session file'
