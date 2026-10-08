@@ -9,6 +9,7 @@ param(
     [string]$SessionPath,
     [switch]$Resume,
     [switch]$ListModels,
+    [switch]$EnableImages,
     [ValidateRange(1,1000)][int]$MaxTurns=30,
     [ValidateRange(1,65536)][int]$MaxTokens=8192,
     [ValidateRange(1,3600)][int]$TimeoutSeconds=120,
@@ -20,9 +21,9 @@ if ($ListModels) { Get-GoModelCatalog; return }
 if (-not $env:OPENCODE_API_KEY) { throw '環境変数 OPENCODE_API_KEY に OpenCode Go の API キーを設定してください。' }
 if ($Resume) {
     if (-not $SessionPath) { throw '-Resume requires -SessionPath.' }
-    $agent=Import-GoSession -Path $SessionPath -Permission $Permission -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds
+    $agent=Import-GoSession -Path $SessionPath -Permission $Permission -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:$EnableImages
 } else {
-    $agent=New-GoAgent -Model $Model -Protocol $Protocol -Workspace $Workspace -Permission $Permission -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -BaseUri $BaseUri
+    $agent=New-GoAgent -Model $Model -Protocol $Protocol -Workspace $Workspace -Permission $Permission -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:$EnableImages -BaseUri $BaseUri
 }
 if ($PSBoundParameters.ContainsKey('Prompt')) { Invoke-GoAgent -Agent $agent -Prompt $Prompt -SessionPath $SessionPath; return }
 Write-Host "PSGoAgent | $($agent.Model) | $($agent.Protocol) | $($agent.Workspace)"

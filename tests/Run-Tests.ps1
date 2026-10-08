@@ -59,7 +59,7 @@ try {
     $r=& $tool $a edit @{path='hello.txt';oldText='one one';newText="two`r`nthree"}
     Assert (-not $r.isError) 'unique edit succeeds'
     $r=& $tool $a read @{path='hello.txt';offset=2;limit=1}
-    Assert ($r.text.Contains('2: three')) 'read supports line offsets'
+    Assert ($r.text.Trim() -eq 'three') 'read supports line offsets'
     $r=& $tool $a read @{path='hello.txt';limit=0}
     Assert $r.isError 'rejects invalid read limits'
     $r=& $tool $a missing @{}

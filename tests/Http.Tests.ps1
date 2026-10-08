@@ -31,15 +31,15 @@ try {
                         $isTool=if ($protocol -eq 'Chat') {$n -eq 1} else {$n -eq 0}
                         $response=switch ($protocol) {
                             'Chat' {
-                                if ($isTool) { @{choices=@(@{finish_reason='tool_calls';message=@{role='assistant';content=$null;tool_calls=@(@{id='http-call';type='function';function=@{name='read';arguments='{"path":"sample.txt"}'}})}})} }
+                                if ($isTool) { @{choices=@(@{finish_reason='tool_calls';message=@{role='assistant';content=$null;tool_calls=@(@{id='http-call';type='function';function=@{name='read';arguments='{"path":"sample.txt"}'}},@{id='http-edit';type='function';function=@{name='edit';arguments='{"path":"edit-target.txt","edits":[{"oldText":"one","newText":"ONE"},{"oldText":"two","newText":"TWO"}]}'}})}})} }
                                 else { @{choices=@(@{finish_reason='stop';message=@{role='assistant';content='HTTP完了'}})} }
                             }
                             'Messages' {
-                                if ($isTool) { @{stop_reason='tool_use';content=@(@{type='tool_use';id='http-call';name='read';input=@{path='sample.txt'}})} }
+                                if ($isTool) { @{stop_reason='tool_use';content=@(@{type='tool_use';id='http-call';name='read';input=@{path='sample.txt'}},@{type='tool_use';id='http-edit';name='edit';input=@{path='edit-target.txt';edits=@(@{oldText='one';newText='ONE'},@{oldText='two';newText='TWO'})}})} }
                                 else { @{stop_reason='end_turn';content=@(@{type='text';text='HTTP完了'})} }
                             }
                             'Responses' {
-                                if ($isTool) { @{status='completed';output=@(@{type='function_call';id='fc';call_id='http-call';name='read';arguments='{"path":"sample.txt"}'})} }
+                                if ($isTool) { @{status='completed';output=@(@{type='function_call';id='fc';call_id='http-call';name='read';arguments='{"path":"sample.txt"}'},@{type='function_call';id='fc-edit';call_id='http-edit';name='edit';arguments='{"path":"edit-target.txt","edits":[{"oldText":"one","newText":"ONE"},{"oldText":"two","newText":"TWO"}]}'})} }
                                 else { @{status='completed';output=@(@{type='message';id='m';role='assistant';content=@(@{type='output_text';text='HTTP完了'})})} }
                             }
                         }
@@ -57,7 +57,8 @@ try {
                 if ([datetime]::UtcNow -gt $deadline -or $job.State -eq 'Failed') { throw 'Mock HTTP server did not start.' }
                 Start-Sleep -Milliseconds 100
             }
-            $agent=New-GoAgent -Model test -Protocol $protocol -Workspace $root -Permission ReadOnly -BaseUri "http://127.0.0.1:$port/v1" -TimeoutSeconds 10
+            [IO.File]::WriteAllText((Join-Path $root 'edit-target.txt'),'one two')
+            $agent=New-GoAgent -Model test -Protocol $protocol -Workspace $root -Permission Auto -BaseUri "http://127.0.0.1:$port/v1" -TimeoutSeconds 10
             $answer=Invoke-GoAgent $agent '読み取って'
             if ($answer -ne 'HTTP完了') { throw "$protocol HTTP answer mismatch" }
             $null=Wait-Job $job -Timeout 10
@@ -66,13 +67,14 @@ try {
             $expected=switch ($protocol) {Chat {'/v1/chat/completions'} Messages {'/v1/messages'} Responses {'/v1/responses'}}
             foreach ($request in $requests) {
                 if ($request.path -ne $expected -or $request.session -ne $agent.Id -or $request.auth -ne 'Bearer mock-test-key') { throw "$protocol path/header mismatch" }
-                if ($request.body.model -ne 'test' -or $request.body.stream -ne $false -or $request.body.tools.Count -ne 5) { throw "$protocol request body mismatch" }
+                if ($request.body.model -ne 'test' -or $request.body.stream -ne $false -or $request.body.tools.Count -ne 7) { throw "$protocol request body mismatch" }
             }
             if ($protocol -eq 'Messages' -and ($requests[0].apiKey -ne 'mock-test-key' -or $requests[0].version -ne '2023-06-01')) { throw 'Messages auth/version mismatch' }
             $last=$requests[$requests.Count-1].body | ConvertTo-Json -Depth 100
             if (-not $last.Contains('HTTP経由テスト') -or -not $last.Contains('http-call')) { throw "$protocol UTF-8 tool result missing" }
+            if (-not $last.Contains('http-edit') -or -not $last.Contains('Successfully replaced 2') -or [IO.File]::ReadAllText((Join-Path $root 'edit-target.txt')) -cne 'ONE TWO') {throw "$protocol batch edit via HTTP failed"}
             if ($protocol -eq 'Chat' -and $requests.Count -ne 3) { throw '429 retry was not performed.' }
-            $count++; Write-Host "PASS: $protocol real HTTP request, headers, UTF-8, tool loop$(if ($protocol -eq 'Chat') {', 429 retry'})"
+            $count++; Write-Host "PASS: $protocol real HTTP request, headers, UTF-8, multiple tools and batch edit$(if ($protocol -eq 'Chat') {', 429 retry'})"
         } finally { Stop-Job $job;Remove-Job $job -Force }
     }
     Write-Host "All $count HTTP integration scenarios passed."

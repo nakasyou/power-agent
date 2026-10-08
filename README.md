@@ -16,10 +16,10 @@ $env:OPENCODE_API_KEY = 'your-opencode-api-key'
 # Windows の例
 ./Start-GoAgent.ps1 -Workspace C:\src\project
 
-# 単発実行。書込・編集・shell は実行前に確認します。
+# 単発実行。書込・編集・powershell は実行前に確認します。
 ./Start-GoAgent.ps1 -Workspace . -Prompt 'コードを調べて README を改善して'
 
-# 読取専用（shell も禁止）
+# 読取専用（powershell も禁止）
 ./Start-GoAgent.ps1 -Workspace . -Permission ReadOnly -Prompt '構成を説明して'
 
 # ツール名を表示
@@ -54,22 +54,78 @@ PowerShell 7 を `pwsh` として起動してください。Windows PowerShell 5
 
 ## ツール
 
+Pi の標準ツールに合わせ、以下の7つをモデルへ公開します。Bash の代わりに Pi にもある `powershell` を使用します。外部の `rg`・`fd` は不要です。
+
 | ツール | 動作 |
 | --- | --- |
-| `read` | UTF-8 テキストを行番号付きで読取。開始行・行数を指定可能 |
-| `list` | 隠しファイルを含む直下の一覧 |
-| `write` | UTF-8 ファイルを作成・上書き。親ディレクトリも作成 |
-| `edit` | 一意に一致する文字列だけを置換。未一致・複数一致は変更せずエラー |
-| `shell` | 別の `pwsh -NoProfile -NonInteractive` プロセスで実行。stdout/stderr と終了コードを返す |
+| `read` | テキストと画像の読取。テキストは開始行・行数指定、2000行／50 KiB 制限と継続案内 |
+| `grep` | 正規表現／リテラル検索、大小文字指定、glob、前後の文脈、行番号、除外設定 |
+| `find` | glob による再帰検索。隠し項目、除外設定、件数上限 |
+| `ls` | 隠し項目を含む、名前順の一覧。ディレクトリには `/` を付加 |
+| `write` | UTF-8 ファイルを作成・上書き。親ディレクトリ作成とファイル変更ロック |
+| `edit` | `edits[]` による複数箇所の一括置換、Unicode 補助照合、BOM／改行保持、差分・パッチ |
+| `powershell` | 別の `pwsh` で実行。終了コード、実行時間、出力更新、タイムアウト・キャンセル、全文ログ |
+
+`grep` は既定100一致、`find` は1000件、`ls` は500件です。`limit` で変更できます。検索は `.gitignore`・`.ignore` の基本的なパターン、否定ルール、ネストした設定を扱います。`.git`・生成ログ用の `.power-agent`・シンボリックリンクは再帰しません。
+
+### 編集
+
+すべての置換は同じ元ファイルに照合します。1箇所でも未一致・曖昧・重複・重なりがある場合は、ファイルを変更しません。完全一致を優先し、未一致時には末尾空白・Unicode 正規化・引用符・ダッシュなどを補助照合します。補助照合で触れない行は元の内容を保持します。UTF-8 BOM と元の LF／CRLF を保持します。
+
+```powershell
+Import-Module ./PSGoAgent.psd1
+$agent = New-GoAgent -Workspace . -Permission Ask
+$result = Invoke-GoTool -Agent $agent -Name edit -Arguments @{
+    path = 'app.ps1'
+    edits = @(
+        @{ oldText = '$port = 3000'; newText = '$port = 8080' }
+        @{ oldText = '$debug = $false'; newText = '$debug = $true' }
+    )
+}
+$result.details.diff               # 行番号付き差分
+$result.details.patch              # unified patch
+$result.details.firstChangedLine
+```
+
+同じパスへの `edit`／`write` は名前付き mutex で直列化します。検証後、一時ファイルから置換して保存します。旧形式の `oldText`／`newText`、JSON 文字列や単一オブジェクトで返された `edits` も受け付けます。
+
+### 画像
+
+`read` は PNG／JPEG／GIF／WebP をファイル内容から判別し、画像ブロックを返します。画像対応モデルへ送信する場合は `-EnableImages` を指定してください。指定しない場合、画像は API リクエストから除外し、その旨をモデルに伝えます。
+
+```powershell
+./Start-GoAgent.ps1 -Workspace . -Model gpt-6-luna -EnableImages -Prompt 'screenshot.png を読んで説明して'
+```
+
+画像は最大5 MiB、元のサイズで送信します。Pi の画像自動リサイズ・BMP 変換は未実装です。実際の画像対応可否は利用モデル／API の仕様に従います。
+
+### コマンド出力とキャンセル
+
+`powershell` の引数は `command` と任意の `timeout`（秒、小数可）です。Pi と同じく既定のコマンドタイムアウトはありません。モデルへ返す出力は末尾2000行／50 KiB。切り詰めた場合や中断時は全文を workspace 内の `.power-agent/output/*.log` に残し、`read` で確認できます。正常終了で切り詰めなかったログは削除します。非ゼロ終了はエラー結果としてモデルへ返します。子プロセスからは `OPENCODE_API_KEY` を除外します。
+
+```powershell
+$cts = [Threading.CancellationTokenSource]::new()
+$cts.CancelAfter(5000)
+Invoke-GoTool -Agent $agent -Name powershell -Arguments @{
+    command = 'Get-ChildItem -Recurse'
+    timeout = 30
+} -CancellationToken $cts.Token -OnUpdate {
+    param($update)
+    Write-Host $update.text -NoNewline
+}
+$cts.Dispose()
+```
+
+`Invoke-GoAgent` でも `-CancellationToken` と `-OnToolUpdate` を指定できます。キャンセル時は実行中のコマンドをプロセスツリーごと停止し、完了済みのファイル変更は残します。HTTP 通信自体は引き続き `-TimeoutSeconds` に従います。
 
 モデルのツール引数は許可した名前・引数に限定して検証します。ツールが失敗したり拒否されたりすると、エラーをモデルへ返して処理を継続します。1応答に複数のツール呼出しがある場合は順番に実行します。
 
-ファイルツールは workspace 内のパスのみ許可し、シンボリックリンク／reparse point を拒否します。`shell` は workspace を作業ディレクトリにしますが、**OS のサンドボックスではありません**。承認したコマンドはユーザーと同じ権限で動作し、workspace 外やネットワークにもアクセスできます。必要に応じて専用環境で実行してください。
+ファイルツールは workspace 内のパスのみ許可し、シンボリックリンク／reparse point を拒否します。`powershell` は workspace を作業ディレクトリにしますが、**OS のサンドボックスではありません**。承認したコマンドはユーザーと同じ権限で動作し、workspace 外やネットワークにもアクセスできます。必要に応じて専用環境で実行してください。
 
 権限モードは以下の3つです。
 
-- `Ask`（既定）：`write`・`edit`・`shell` の引数を表示して確認します。小文字 `y` で許可。
-- `ReadOnly`：上記3ツールを禁止します。`read`・`list` のみ許可。
+- `Ask`（既定）：`write`・`edit`・`powershell` の引数を表示して確認します。小文字 `y` で許可。
+- `ReadOnly`：上記3ツールを禁止します。`read`・`grep`・`find`・`ls` のみをモデルへ公開。
 - `Auto`：確認せず実行します。自動実行したい場合に明示指定してください。
 
 ```powershell
@@ -88,7 +144,7 @@ workspace 直下の `AGENTS.md` があれば開始時に指示へ追加します
 ./Start-GoAgent.ps1 -SessionPath ./sessions/work.json -Resume -Prompt '続けて修正して'
 ```
 
-指定したファイルに、API 応答とツール結果の往復が完了するたびに JSON を保存します。会話 ID、workspace、モデル、システム指示、履歴を復元します。キーや承認コールバック、権限モードは保存しません。再開時も権限は既定で `Ask` です。保存ファイルには会話と読取内容が含まれるので、公開リポジトリへ入れないでください。信頼できる自分のセッションファイルのみ再開してください。
+指定したファイルに、API 応答とツール結果の往復が完了するたびに JSON を保存します。会話 ID、workspace、モデル、システム指示、履歴を復元します。画像送信設定も復元します。キーや承認コールバック、権限モードは保存しません。再開時も権限は既定で `Ask` です。保存ファイルには会話と読取内容・画像が含まれるので、公開リポジトリへ入れないでください。信頼できる自分のセッションファイルのみ再開してください。
 
 対話コマンド：`/exit`、`/new`（履歴と会話 ID をリセット）、`/save PATH`、`/help`。
 
@@ -107,18 +163,19 @@ $restored = Import-GoSession -Path ./sessions/work.json
 
 ## 制限と検証
 
-既定では1依頼につき最大30回の API 呼出し、出力上限8192トークン、HTTP タイムアウト120秒です。`-MaxTurns`、`-MaxTokens`、`-TimeoutSeconds` で変更できます。shell は既定60秒、ツール引数で最大300秒まで。モデルに返すツール結果は24000文字までです。429／500／502／503／504 の応答は2秒・4秒の待機後に最大2回再試行します。トークン上限で途切れた応答は完成した回答として扱いません。
+既定では1依頼につき最大30回の API 呼出し、出力上限8192トークン、HTTP タイムアウト120秒です。`-MaxTurns`、`-MaxTokens`、`-TimeoutSeconds` で変更できます。テキスト読取・コマンド出力は2000行／50 KiB、検索と編集差分は50 KiB を目安に制限し、継続案内を付けます。429／500／502／503／504 の応答は2秒・4秒の待機後に最大2回再試行します。トークン上限で途切れた応答は完成した回答として扱いません。
 
-この初版はテキスト中心の CLI です。応答は非ストリーミングで受信します。画像、MCP、プラグイン、Pi の全 TUI、履歴の自動圧縮、分岐、バックグラウンド実行は未実装です。長い会話では `/new` で切り替えてください。ツール編集の自動ロールバックは行いません。shell の大量出力は受信時にはメモリを使用します。
+LLM 応答は非ストリーミングで受信します。MCP、プラグイン、Pi の全 TUI、履歴の自動圧縮、分岐、バックグラウンド実行は未実装です。長い会話では `/new` で切り替えてください。完了したファイル変更の自動ロールバックは行いません。ツールの対応範囲と Pi との差は [docs/tool-compatibility.md](docs/tool-compatibility.md) にまとめています。
 
 追加のテスト依存なしで実行できます。
 
 ```powershell
 pwsh -NoProfile -File ./tests/Run-Tests.ps1
+pwsh -NoProfile -File ./tests/Tools.Tests.ps1
 pwsh -NoProfile -File ./tests/Http.Tests.ps1
 ```
 
-PowerShell 7.6.3 / Linux で、49件のアサーションと3方式の実 HTTP モック統合シナリオを検証済み。認証ヘッダー、会話 ID、日本語、ツール往復、保存・再開、曖昧な編集、パス逸脱、権限制御、コマンドの失敗・タイムアウト、429再試行を確認しました。OpenCode Go の API キーが提供されていないため実サービス接続は未検証です。Windows / macOS での実行は未検証です。
+PowerShell 7.6.3 / Linux で、136件のアサーションと3方式の実 HTTP モック統合シナリオを検証済み。複数編集・失敗時の無変更・補助照合・BOM／改行保持・パッチの適用結果・別プロセス間の変更ロック、検索と除外設定、画像の API 形式変換、出力制限・更新・キャンセルに加え、認証・ツール往復・保存／再開・429再試行を確認しました。OpenCode Go の API キーが提供されていないため実サービス接続は未検証です。Windows / macOS での実行は未検証です。
 
 ## 参考
 

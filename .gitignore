@@ -3,3 +3,4 @@ sessions/
 .env
 .env.*
 *.tmp
+.power-agent/
