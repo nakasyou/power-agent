@@ -3,7 +3,7 @@
 param(
     [string]$Prompt,
     [string]$Model = 'glm-5.3-flash',
-    [ValidateSet('OpenCodeGo','OpenAI')][string]$Provider='OpenCodeGo',
+    [ValidateSet('OpenCodeGo','OpenAI','Codex')][string]$Provider='OpenCodeGo',
     [string]$ApiKey,
     [ValidateSet('Auto','Chat','Messages','Responses')][string]$Protocol = 'Auto',
     [string]$Workspace = (Get-Location).Path,
@@ -15,6 +15,8 @@ param(
     [switch]$Plain,
     [ValidateRange(0,10)][int]$MaxRetries=2,
     [switch]$ListModels,
+    [switch]$Login,
+    [switch]$Logout,
     [switch]$Upgrade,
     [switch]$EnableImages,
     [switch]$NoStream,
@@ -33,6 +35,9 @@ Import-Module (Join-Path $PSScriptRoot 'PSGoAgent.psd1') -Force
 $consoleState=@{}
 $renderer=New-GoConsoleRenderer -HideReasoning:$HideReasoning -CompactReasoning -Plain:$Plain -State $consoleState
 if ($ListModels) { Get-GoModelCatalog; return }
+if ($Login) {Connect-GoCodex -GlobalConfigDirectory $GlobalConfigDirectory;return}
+if ($Logout) {Disconnect-GoCodex -GlobalConfigDirectory $GlobalConfigDirectory;return}
+if ($Provider -eq 'Codex' -and -not $PSBoundParameters.ContainsKey('Model')) {$Model='gpt-5.3-codex'}
 if ($Provider -eq 'OpenAI' -and -not $PSBoundParameters.ContainsKey('Model')) {$Model='gpt-4.1'}
 if ($Resume) {
     if (-not $SessionPath) {
