@@ -29,20 +29,25 @@ function Start-Server([string]$Protocol,[string]$Scenario='Normal') {
             $context.Response.OutputStream.Flush()
         }
         try {
-            $count=if ($scenario -in @('Normal','Cli')) {2} elseif ($scenario -eq 'Retry') {3} else {1}
+            $count=if ($scenario -in @('Normal','Cli','Generic')) {2} elseif ($scenario -eq 'Retry') {3} else {1}
             for ($step=0;$step -lt $count;$step++) {
                 $context=$listener.GetContext()
                 $context.Response.KeepAlive=$false
                 $reader=[IO.StreamReader]::new($context.Request.InputStream,[Text.Encoding]::UTF8)
                 $body=$reader.ReadToEnd() | ConvertFrom-Json -AsHashtable;$reader.Dispose()
-                $requests.Add(@{path=$context.Request.Url.AbsolutePath;session=$context.Request.Headers['x-opencode-session'];auth=$context.Request.Headers['Authorization'];body=$body})
+                $requests.Add(@{accept=$context.Request.Headers['Accept'];path=$context.Request.Url.AbsolutePath;session=$context.Request.Headers['x-opencode-session'];auth=$context.Request.Headers['Authorization'];body=$body})
                 if ($scenario -eq 'Retry' -and $step -eq 0) {$context.Response.StatusCode=429;$context.Response.Close();continue}
                 if ($scenario -eq 'Json') {
                     $context.Response.ContentType='application/json'
                     $bytes=[Text.Encoding]::UTF8.GetBytes('{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"JSON complete","reasoning_content":"JSON reasoning"}}]}')
                     $context.Response.ContentLength64=$bytes.Length;$context.Response.OutputStream.Write($bytes,0,$bytes.Length);$context.Response.Close();continue
                 }
-                $context.Response.ContentType='text/event-stream; charset=utf-8';$context.Response.SendChunked=$true
+                if ($scenario -eq 'Html') {
+                    $bytes=[Text.Encoding]::UTF8.GetBytes('<html>Sign in</html>')
+                    $context.Response.ContentType='text/html';$context.Response.ContentLength64=$bytes.Length
+                    $context.Response.OutputStream.Write($bytes,0,$bytes.Length);$context.Response.Close();continue
+                }
+                $context.Response.ContentType=if ($scenario -eq 'Generic') {'application/octet-stream'} else {'text/event-stream; charset=utf-8'};$context.Response.SendChunked=$true
                 $first=if ($scenario -eq 'Retry') {$step -eq 1} else {$step -eq 0}
                 $reason=if ($first) {'Think €'} else {'Check €'}
                 switch ($protocol) {
@@ -121,6 +126,7 @@ try {
             $session=Join-Path $root "$protocol.session.json"
             $answer=Invoke-GoAgent $agent 'stream test' -OnEvent $onEvent -SessionPath $session
             $null=Wait-Job $server.job -Timeout 10;$capture=Receive-Job $server.job -ErrorAction Stop
+            Assert ($capture.requests[0].accept -eq 'text/event-stream') "$protocol requests SSE content negotiation"
             Assert ($answer -eq 'Done €') "$protocol assembled final text"
             $reasoning=@($events | Where-Object {$_.event.type -eq 'reasoning_delta'})
             $texts=@($events | Where-Object {$_.event.type -eq 'text_delta'})
@@ -147,6 +153,12 @@ try {
             Assert ($loaded.Id -eq $agent.Id -and $loaded.History.Count -eq 4) "$protocol complete streamed conversation saves and resumes"
         } finally {Stop-Server $server}
     }
+    $server=Start-Server Responses Generic
+    try {
+        $a=New-GoAgent -Model test -Protocol Responses -Workspace $root -Permission Auto -BaseUri $server.uri -TimeoutSeconds 15
+        $answer=Invoke-GoAgent $a 'generic SSE'
+        Assert ($answer -eq 'Done €') 'valid Responses SSE accepted with generic gateway Content-Type'
+    } finally {Stop-Server $server}
     foreach ($protocol in @('Chat','Messages','Responses')) {
         $server=Start-Server $protocol Broken
         try {
@@ -156,7 +168,7 @@ try {
             Assert ($failed -and $a.History.Count -eq 0 -and -not $a.Busy) "$protocol premature EOF discards partial response and never executes tools"
         } finally {Stop-Server $server}
     }
-    foreach ($scenario in @('Malformed','Length','Cancel','Timeout','Json','Retry')) {
+    foreach ($scenario in @('Malformed','Length','Cancel','Timeout','Json','Retry','Html')) {
         $server=Start-Server Chat $scenario
         $cts=[Threading.CancellationTokenSource]::new()
         try {
@@ -165,8 +177,8 @@ try {
             if ($scenario -eq 'Cancel') {$cts.CancelAfter(300)}
             if ($scenario -eq 'Timeout') {$a.TimeoutSeconds=1}
             $failed=$false;$answer=$null
-            try {$answer=Invoke-GoAgent $a 'test' -OnEvent $callback -CancellationToken $cts.Token} catch {$failed=$true}
-            if ($scenario -in @('Malformed','Length','Cancel','Timeout')) {Assert ($failed -and $a.History.Count -eq 0 -and -not $a.Busy) "$scenario stream failure rolls back incomplete exchange"}
+            try {$answer=Invoke-GoAgent $a 'test' -OnEvent $callback -CancellationToken $cts.Token} catch {$failed=$true;if ($scenario -eq 'Html') {Assert ($_.Exception.Message.Contains('text/html') -and $_.Exception.Message.Contains($server.uri)) 'HTML response reports actual format and endpoint'}}
+            if ($scenario -in @('Malformed','Length','Cancel','Timeout','Html')) {Assert ($failed -and $a.History.Count -eq 0 -and -not $a.Busy) "$scenario stream failure rolls back incomplete exchange"}
             elseif ($scenario -eq 'Json') {Assert ($answer -eq 'JSON complete' -and @($events | Where-Object type -EQ text_delta).Count -eq 1) 'JSON fallback emits exactly one complete text event'}
             else {
                 $null=Wait-Job $server.job -Timeout 10;$capture=Receive-Job $server.job -ErrorAction Stop

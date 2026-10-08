@@ -97,17 +97,18 @@ while ($true) {
             $choice=$line.Substring(6).Trim()
             if (-not $choice) {
                 $models=@(Get-GoModelCatalog)
-                $picked=Select-GoTerminalItem -Title 'Model' -Labels @($models | ForEach-Object {"$($_.Model) · $($_.Protocol)"}) -Plain:$Plain
+                $picked=Select-GoTerminalItem -Title 'Model' -Labels @($models | ForEach-Object {$_.Label}) -Plain:$Plain
                 if ($picked -lt 0) {if ($Plain -or [Console]::IsInputRedirected) {$models | Format-Table -AutoSize};continue}
-                $choice=$models[$picked].Model
+                $choice="$($models[$picked].Provider)/$($models[$picked].Model)"
             }
+            if ($choice -match '^(.+) \((OpenCode Go|OpenAI|Codex)\)$') {$choice="$(if ($Matches[2] -eq 'OpenCode Go') {'OpenCodeGo'} else {$Matches[2]})/$($Matches[1])"}
             $parts=$choice -split '\s+'
             if ($parts.Count -gt 2) {throw 'Usage: /model NAME [Chat|Messages|Responses]'}
             $options=@{}
             if ($parts.Count -eq 2) {$options.Protocol=$parts[1]}
             Set-GoModel $agent $parts[0] @options
             Save-GoSession $agent $SessionPath
-            Write-Host "Model: $($agent.Model) / $($agent.Protocol)" -ForegroundColor Cyan
+            Write-Host "Model: $($agent.Model) ($($agent.Provider)) / $($agent.Protocol)" -ForegroundColor Cyan
         } catch {Write-Host $_.Exception.Message -ForegroundColor Red}
         continue
     }

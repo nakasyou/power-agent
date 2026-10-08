@@ -187,7 +187,7 @@ function Send-GoStreamRequest($Agent,$Request,[Threading.CancellationToken]$Canc
             $response=$null;$stream=$null
             try {
                 foreach ($key in $Request.Headers.Keys) {$null=$message.Headers.TryAddWithoutValidation($key,[string]$Request.Headers[$key])}
-                $null=$message.Headers.TryAddWithoutValidation('Accept','text/event-stream')
+                if (-not $message.Headers.Contains('Accept')) {$null=$message.Headers.TryAddWithoutValidation('Accept','text/event-stream')}
                 $message.Content=[Net.Http.StringContent]::new(($Request.Body | ConvertTo-Json -Depth 100 -Compress),[Text.Encoding]::UTF8,'application/json')
                 try {$response=Wait-GoNetworkTask ($client.SendAsync($message,[Net.Http.HttpCompletionOption]::ResponseHeadersRead,$token)) $token $OnEvent}
                 catch {
@@ -215,7 +215,12 @@ function Send-GoStreamRequest($Agent,$Request,[Threading.CancellationToken]$Canc
                     Publish-GoBufferedResponse $Agent $result $OnEvent
                     return $result
                 }
-                if (-not $response.Content.Headers.ContentType -or $response.Content.Headers.ContentType.MediaType -ne 'text/event-stream') {throw 'Expected text/event-stream from provider.'}
+                $mediaType=if ($response.Content.Headers.ContentType) {$response.Content.Headers.ContentType.MediaType} else {'missing'}
+                # Some gateways strip SSE metadata. The parser still requires valid JSON
+                # events and a completed provider response before accepting any result.
+                if ($mediaType -notin @('text/event-stream','application/octet-stream','text/plain','missing')) {
+                    throw "$($Agent.Provider) returned HTTP $status with Content-Type '$mediaType' from $($Request.Uri). Expected text/event-stream or application/json. Check the provider endpoint and authentication; an HTML response usually indicates a login page or proxy."
+                }
                 $stream=$response.Content.ReadAsStreamAsync($token).GetAwaiter().GetResult()
                 # Never retry a partially received stream: already displayed deltas must not duplicate.
                 return Read-GoSseResponse $stream $Agent.Protocol $token $OnEvent

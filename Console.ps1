@@ -202,7 +202,7 @@ function Show-GoTerminalStatus {
     try {$width=[Math]::Max(20,[Math]::Min(120,[Console]::WindowWidth))} catch {}
     Write-Host ('─'*$width) -ForegroundColor DarkCyan
     Write-Host ' power-agent ' -ForegroundColor Cyan -NoNewline
-    Write-Host "$($Agent.Model) · $($Agent.Permission) · reasoning $($Agent.ReasoningEffort) / budget $($Agent.ThinkingBudget) · $($Agent.History.Count) messages" -ForegroundColor Gray
+    Write-Host "$($Agent.Model) ($($Agent.Provider)) · $($Agent.Permission) · reasoning $($Agent.ReasoningEffort) / budget $($Agent.ThinkingBudget) · $($Agent.History.Count) messages" -ForegroundColor Gray
     Write-Host " $($Agent.Workspace)" -ForegroundColor DarkGray
     Write-Host " session: $([IO.Path]::GetFileName($SessionPath))" -ForegroundColor DarkGray
     Write-Host ' Enter send · Alt+Enter newline · ↑↓ history · Ctrl+O reasoning · Ctrl+T tools · Ctrl+C clear · Ctrl+D exit · /help' -ForegroundColor DarkGray

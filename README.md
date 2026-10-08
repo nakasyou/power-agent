@@ -307,3 +307,18 @@ The builder collects functions from the project using PSScriptBuilder and create
 In GitHub Actions, select **Release → Run workflow**, then choose `patch`, `minor`, or `major`. The workflow increments the manifest version, builds the single script, runs all tests, generates SHA256SUMS.txt, commits the version, creates a tag and publishes both assets to GitHub Releases. Release jobs are serialized; version changes and tags are pushed atomically. The repository must allow the workflow's token to write contents. Failed checks prevent tagging and publication.
 
 If migrating from the older multi-file distribution, run `./Upgrade.ps1` to install `Power-Agent.ps1` in that directory, then use the bundled entrypoint. All future bundled updates use `./Power-Agent.ps1 -Upgrade` or `/upgrade`.
+
+### Unified model selection
+
+`/model` lists provider-qualified entries such as `gpt-6-luna (OpenCode Go)` and
+`gpt-6-luna (Codex)`. Selecting an entry switches both the model and provider while
+keeping the conversation. You can also enter `/model Codex/gpt-6.1-sol` or
+`/model gpt-6-luna (OpenCode Go)`. Bare model names use the current provider.
+Codex requires device login; OpenCode Go and OpenAI use their respective environment
+API keys. Switching providers clears an explicit `-ApiKey` and resets the endpoint
+to the selected provider's default so credentials do not cross services. For a custom
+OpenAI-compatible endpoint, start with `-Provider OpenAI -BaseUri ... -Model ...`.
+Model availability depends on the account and provider; catalog entries are not an
+entitlement check. Codex SSE requests explicitly negotiate `text/event-stream`.
+SSE streams with missing or generic gateway Content-Type headers are validated by
+the SSE parser; HTML pages are rejected. Unexpected response formats report the provider, endpoint and Content-Type.
