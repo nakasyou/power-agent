@@ -10,8 +10,8 @@ $null=New-Item -ItemType Directory $root
 $module=Get-Module PSGoAgent
 try {
     $a=New-GoAgent -Workspace $root -Permission ReadOnly
-    $a.History.Add(@{kind='user';text='日本語の依頼'})
-    $a.History.Add(@{kind='assistant';text='調査します';calls=@(@{id='c1';name='read';arguments='{"path":"README.md"}'});raw=@{role='assistant';content='調査します';reasoning_content='private reasoning'}})
+    $a.History.Add(@{kind='user';text='Inspect the café project'})
+    $a.History.Add(@{kind='assistant';text='Investigating';calls=@(@{id='c1';name='read';arguments='{"path":"README.md"}'});raw=@{role='assistant';content='Investigating';reasoning_content='private reasoning'}})
     $a.History.Add(@{kind='result';callId='c1';text='result';isError=$false;content=@();details=@{}})
     $id=$a.Id
     foreach ($model in @('gpt-6-luna','minimax-m2.7','glm-5.3-flash')) {
@@ -19,7 +19,7 @@ try {
         Assert ($a.Id -eq $id -and $a.History.Count -eq 3) "$model switch preserves conversation and tool results"
         $request=& $module {param($Agent) New-GoRequest $Agent} $a
         $json=$request.Body | ConvertTo-Json -Depth 100
-        Assert ($json.Contains('日本語の依頼') -and $json.Contains('c1') -and $json.Contains('result')) "$model request contains converted history"
+        Assert ($json.Contains('Inspect the café project') -and $json.Contains('c1') -and $json.Contains('result')) "$model request contains converted history"
         Assert (-not $json.Contains('private reasoning')) "$model does not replay foreign reasoning"
         switch ($a.Protocol) {
             'Responses' {Assert ($request.Body.input[1].type -eq 'message' -and $request.Body.input[2].type -eq 'function_call') 'Responses history uses output blocks'}
@@ -54,7 +54,7 @@ try {
     $other=New-GoAgent -Workspace $PSScriptRoot
     Save-GoSession $other (Join-Path $sessionDir 'other.session.json')
     $list=@(Get-GoSessionList $sessionDir $root)
-    Assert ($list.Count -eq 1 -and $list[0].Title -eq '日本語の依頼') 'session list filters workspace and invalid files'
+    Assert ($list.Count -eq 1 -and $list[0].Title -eq 'Inspect the café project') 'session list filters workspace and invalid files'
     Assert (-not ((Get-Content $path -Raw).Contains('Authorization'))) 'session contains no credentials'
     # Exercise actual CLI command routing with redirected input and no API requests.
     $start=[Diagnostics.ProcessStartInfo]::new((Get-Process -Id $PID).Path)
@@ -73,7 +73,7 @@ try {
         Assert ($saved.Model -eq 'gpt-6-luna' -and $saved.ReasoningEffort -eq 'High') 'CLI persists model and effort changes'
         Assert ($saved.History.Count -eq 3) 'CLI /new preserves original and /resume restores it'
         Assert (@(Get-ChildItem $sessionDir -Filter '*.session.json').Count -eq 4) 'CLI /new saves to a separate session file'
-        Assert ($text.Contains('日本語の依頼') -and $text.Contains('reasoning High')) 'CLI redraws resumed transcript and settings'
+        Assert ($text.Contains('Inspect the café project') -and $text.Contains('reasoning High')) 'CLI redraws resumed transcript and settings'
     } finally {$process.Dispose()}
     Write-Host "All $count terminal assertions passed."
 } finally {Remove-Item $root -Recurse -Force}

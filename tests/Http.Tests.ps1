@@ -4,7 +4,7 @@ Set-StrictMode -Version Latest
 Import-Module (Join-Path $PSScriptRoot '../PSGoAgent.psd1') -Force
 $root=Join-Path ([IO.Path]::GetTempPath()) ('psgo-http-'+[guid]::NewGuid())
 $null=New-Item -ItemType Directory $root
-[IO.File]::WriteAllText((Join-Path $root 'sample.txt'),'HTTP経由テスト')
+[IO.File]::WriteAllText((Join-Path $root 'sample.txt'),'HTTP café test')
 $oldKey=$env:OPENCODE_API_KEY
 $env:OPENCODE_API_KEY='mock-test-key'
 $count=0
@@ -32,15 +32,15 @@ try {
                         $response=switch ($protocol) {
                             'Chat' {
                                 if ($isTool) { @{choices=@(@{finish_reason='tool_calls';message=@{role='assistant';content=$null;tool_calls=@(@{id='http-call';type='function';function=@{name='read';arguments='{"path":"sample.txt"}'}},@{id='http-edit';type='function';function=@{name='edit';arguments='{"path":"edit-target.txt","edits":[{"oldText":"one","newText":"ONE"},{"oldText":"two","newText":"TWO"}]}'}})}})} }
-                                else { @{choices=@(@{finish_reason='stop';message=@{role='assistant';content='HTTP完了'}})} }
+                                else { @{choices=@(@{finish_reason='stop';message=@{role='assistant';content='HTTP complete'}})} }
                             }
                             'Messages' {
                                 if ($isTool) { @{stop_reason='tool_use';content=@(@{type='tool_use';id='http-call';name='read';input=@{path='sample.txt'}},@{type='tool_use';id='http-edit';name='edit';input=@{path='edit-target.txt';edits=@(@{oldText='one';newText='ONE'},@{oldText='two';newText='TWO'})}})} }
-                                else { @{stop_reason='end_turn';content=@(@{type='text';text='HTTP完了'})} }
+                                else { @{stop_reason='end_turn';content=@(@{type='text';text='HTTP complete'})} }
                             }
                             'Responses' {
                                 if ($isTool) { @{status='completed';output=@(@{type='function_call';id='fc';call_id='http-call';name='read';arguments='{"path":"sample.txt"}'},@{type='function_call';id='fc-edit';call_id='http-edit';name='edit';arguments='{"path":"edit-target.txt","edits":[{"oldText":"one","newText":"ONE"},{"oldText":"two","newText":"TWO"}]}'})} }
-                                else { @{status='completed';output=@(@{type='message';id='m';role='assistant';content=@(@{type='output_text';text='HTTP完了'})})} }
+                                else { @{status='completed';output=@(@{type='message';id='m';role='assistant';content=@(@{type='output_text';text='HTTP complete'})})} }
                             }
                         }
                     }
@@ -59,8 +59,8 @@ try {
             }
             [IO.File]::WriteAllText((Join-Path $root 'edit-target.txt'),'one two')
             $agent=New-GoAgent -Model test -Protocol $protocol -Workspace $root -Permission Auto -BaseUri "http://127.0.0.1:$port/v1" -TimeoutSeconds 10
-            $answer=Invoke-GoAgent $agent '読み取って' -NoStream
-            if ($answer -ne 'HTTP完了') { throw "$protocol HTTP answer mismatch" }
+            $answer=Invoke-GoAgent $agent 'Read the file' -NoStream
+            if ($answer -ne 'HTTP complete') { throw "$protocol HTTP answer mismatch" }
             $null=Wait-Job $job -Timeout 10
             $capture=Receive-Job $job -ErrorAction Stop
             $requests=$capture.requests
@@ -71,7 +71,7 @@ try {
             }
             if ($protocol -eq 'Messages' -and ($requests[0].apiKey -ne 'mock-test-key' -or $requests[0].version -ne '2023-06-01')) { throw 'Messages auth/version mismatch' }
             $last=$requests[$requests.Count-1].body | ConvertTo-Json -Depth 100
-            if (-not $last.Contains('HTTP経由テスト') -or -not $last.Contains('http-call')) { throw "$protocol UTF-8 tool result missing" }
+            if (-not $last.Contains('HTTP café test') -or -not $last.Contains('http-call')) { throw "$protocol UTF-8 tool result missing" }
             if (-not $last.Contains('http-edit') -or -not $last.Contains('Successfully replaced 2') -or [IO.File]::ReadAllText((Join-Path $root 'edit-target.txt')) -cne 'ONE TWO') {throw "$protocol batch edit via HTTP failed"}
             if ($protocol -eq 'Chat' -and $requests.Count -ne 3) { throw '429 retry was not performed.' }
             $count++; Write-Host "PASS: $protocol real HTTP request, headers, UTF-8, multiple tools and batch edit$(if ($protocol -eq 'Chat') {', 429 retry'})"

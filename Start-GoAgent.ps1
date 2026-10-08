@@ -30,11 +30,11 @@ Import-Module (Join-Path $PSScriptRoot 'PSGoAgent.psd1') -Force
 $consoleState=@{}
 $renderer=New-GoConsoleRenderer -HideReasoning:$HideReasoning -CompactReasoning -Plain:$Plain -State $consoleState
 if ($ListModels) { Get-GoModelCatalog; return }
-if (-not $env:OPENCODE_API_KEY) { throw '環境変数 OPENCODE_API_KEY に OpenCode Go の API キーを設定してください。' }
+if (-not $env:OPENCODE_API_KEY) { throw 'Set OPENCODE_API_KEY to your OpenCode Go API key.' }
 if ($Resume) {
     if (-not $SessionPath) {
         $latest=Get-GoSessionList $SessionDirectory ([IO.Path]::GetFullPath($Workspace)) | Sort-Object Updated -Descending | Select-Object -First 1
-        if (-not $latest) {throw '保存済みセッションがありません。'}
+        if (-not $latest) {throw 'No saved sessions found.'}
         $SessionPath=$latest.Path
     }
     $thinkingOptions=@{}
@@ -57,7 +57,7 @@ while ($true) {
     if ($null -eq $line -or $line -eq '/exit') { break }
     if ([string]::IsNullOrWhiteSpace($line)) { continue }
     if ($line -eq '/help') {
-        Write-Host '/exit 終了 · /new 新規 · /save [PATH] 保存 · /resume [番号|PATH] 再開 · /retry 再送 · /model [NAME] · /reasoning [Default|Low|Medium|High] · /thinking [BUDGET] · /upgrade 更新' -ForegroundColor Cyan; continue
+        Write-Host '/exit quit · /new conversation · /save [PATH] · /resume [NUMBER|PATH] · /retry resend · /model [NAME] · /reasoning [Default|Low|Medium|High] · /thinking [BUDGET] · /upgrade update' -ForegroundColor Cyan; continue
     }
     if ($line -eq '/upgrade') {
         try {
@@ -72,7 +72,7 @@ while ($true) {
             $choice=$line.Substring(6).Trim()
             if (-not $choice) {
                 $models=@(Get-GoModelCatalog)
-                $picked=Select-GoTerminalItem -Title 'モデル' -Labels @($models | ForEach-Object {"$($_.Model) · $($_.Protocol)"}) -Plain:$Plain
+                $picked=Select-GoTerminalItem -Title 'Model' -Labels @($models | ForEach-Object {"$($_.Model) · $($_.Protocol)"}) -Plain:$Plain
                 if ($picked -lt 0) {if ($Plain -or [Console]::IsInputRedirected) {$models | Format-Table -AutoSize};continue}
                 $choice=$models[$picked].Model
             }
@@ -101,18 +101,18 @@ while ($true) {
             $sessions=@(Get-GoSessionList $SessionDirectory $agent.Workspace | Sort-Object Updated -Descending)
             $selection=$line.Substring(7).Trim()
             if (-not $selection) {
-                $picked=Select-GoTerminalItem -Title 'セッション再開' -Labels @($sessions | ForEach-Object {"$($_.Updated.ToString('MM/dd HH:mm')) · $($_.Model) · $($_.Title)"}) -Plain:$Plain
+                $picked=Select-GoTerminalItem -Title 'Resume session' -Labels @($sessions | ForEach-Object {"$($_.Updated.ToString('MM/dd HH:mm')) · $($_.Model) · $($_.Title)"}) -Plain:$Plain
                 if ($picked -ge 0) {$selection=$sessions[$picked].Path}
                 else {
                 for ($i=0;$i -lt $sessions.Count;$i++) {Write-Host ("{0,3}  {1:MM/dd HH:mm}  {2}  {3}" -f ($i+1),$sessions[$i].Updated,$sessions[$i].Model,$sessions[$i].Title) -ForegroundColor Cyan}
-                if (-not $sessions.Count) {Write-Host '保存済みセッションがありません。'}
-                else {Write-Host '/resume 番号 または /resume PATH で再開します。' -ForegroundColor DarkGray}
+                if (-not $sessions.Count) {Write-Host 'No saved sessions found.'}
+                else {Write-Host 'Use /resume NUMBER or /resume PATH to resume.' -ForegroundColor DarkGray}
                 continue
                 }
             }
             $number=0
             if ([int]::TryParse($selection,[ref]$number)) {
-                if ($number -lt 1 -or $number -gt $sessions.Count) {throw 'セッション番号が範囲外です。'}
+                if ($number -lt 1 -or $number -gt $sessions.Count) {throw 'Session number is out of range.'}
                 $selection=$sessions[$number-1].Path
             }
             $resumed=Import-GoSession -Path $selection -Permission $Permission -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds
@@ -134,7 +134,7 @@ while ($true) {
         if ($SessionPath) { Save-GoSession $agent $SessionPath }
         $failedPrompt=$null
         Show-GoSessionTranscript $agent -Renderer $renderer -ConsoleState $consoleState
-        Write-Host '新しい会話を開始しました。'; continue
+        Write-Host 'Started a new conversation.'; continue
     }
     if ($line -eq '/save' -or $line.StartsWith('/save ')) {
         try {if ($line.StartsWith('/save ')) {$SessionPath=[IO.Path]::GetFullPath($line.Substring(6).Trim())};Save-GoSession $agent $SessionPath;Write-Host "Saved: $SessionPath" -ForegroundColor Green}
@@ -143,10 +143,10 @@ while ($true) {
     }
     if ($line -eq '/retry') {
         $last=@($agent.History | Select-Object -Last 1)
-        if ($last.Count -and $last[0].kind -eq 'result') {$line='直前のツール結果を使って続けてください。ツールを重複実行しないでください。'}
+        if ($last.Count -and $last[0].kind -eq 'result') {$line='Continue using the previous tool results. Do not execute completed tools again.'}
         elseif ($failedPrompt) {$line=$failedPrompt}
-        else {Write-Host '再送対象の失敗した依頼がありません。' -ForegroundColor Yellow;continue}
-    } elseif ($line.StartsWith('/')) {Write-Host '不明なコマンドです。/help を参照してください。' -ForegroundColor Yellow;continue}
+        else {Write-Host 'No failed request to resend.' -ForegroundColor Yellow;continue}
+    } elseif ($line.StartsWith('/')) {Write-Host 'Unknown command. See /help.' -ForegroundColor Yellow;continue}
     $null=& $renderer @{type='user';text=$line;silent=$consoleState.native}
     $cancellation=[Threading.CancellationTokenSource]::new()
     $consoleState.cancellation=$cancellation

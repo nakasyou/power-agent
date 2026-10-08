@@ -1,35 +1,37 @@
-# ストリーミング API
+# Streaming API
 
-`Invoke-GoAgent -OnEvent { param($event) ... }` が以下のイベントを順番に通知します。コールバックの戻り値は破棄します。重い処理や例外を発生させず、短い表示・記録処理に使用してください。
+`Invoke-GoAgent -OnEvent { param($event) ... }` emits events in order. Callback return values are discarded. Keep callbacks brief and avoid throwing exceptions.
 
-| type | 主なフィールド | タイミング |
+| type | Fields | Timing |
 | --- | --- | --- |
-| `assistant_start` | `turn` | モデル応答の受信開始前 |
-| `reasoning_delta` | `delta` | provider が返す公開 reasoning／summary の差分 |
-| `text_delta` | `delta` | 本文の差分 |
-| `tool_call_delta` | `index`, `delta`、方式により `name`, `callId` | ツール引数 JSON の差分。まだ実行しない |
-| `assistant_end` | `turn` | 完成した応答の検証後 |
-| `tool_start` | `name`, `callId` | ローカルツールの実行前 |
-| `tool_output_delta` | `name`, `callId`, `delta` | PowerShell stdout／stderr の増分 |
-| `tool_end` | `name`, `callId`, `text`, `details`, `isError` | ツールの完了・失敗時 |
-| `agent_error` | `message` | 失敗・中断時。通常の例外も呼出元へ返す |
+| `assistant_start` | `turn` | Before receiving a model response |
+| `reasoning_delta` | `delta` | Public reasoning/summary fragments supplied by the provider |
+| `text_delta` | `delta` | Assistant text fragments |
+| `tool_call_delta` | `index`, `delta`; protocol-dependent `name`, `callId` | Tool-argument JSON fragments; not executable yet |
+| `assistant_end` | `turn` | After response completion and validation |
+| `tool_start` | `name`, `callId` | Before local tool execution |
+| `tool_output_delta` | `name`, `callId`, `delta` | Incremental PowerShell stdout/stderr |
+| `tool_end` | `name`, `callId`, `text`, `details`, `isError` | Tool completion or failure |
+| `retry` | `attempt`, `maxRetries`, `delaySeconds`, `status` | Before a transient-error retry wait |
+| `ui_tick` | None | During asynchronous network waits; ignore for transcript storage |
+| `agent_error` | `message` | Failure/interruption; an exception also reaches the caller |
 
-`reasoning_delta` は provider が提供した内容に限ります。Messages の signature、redacted thinking、Responses の encrypted_content は表示イベントに含めず、API 再送用の元応答に保持します。Chat の OpenCode `reasoning` 差分は再送時に `reasoning_content` へ対応付けます。
+Reasoning events contain only provider-supplied public content. Messages signatures/redacted thinking and Responses encrypted_content remain in raw history for replay, without display events. Chat OpenCode reasoning deltas map to `reasoning_content` for replay.
 
-ツール引数の差分は有効な JSON とは限りません。コールバックで実行せず、完成した assistant 応答を agent が検証・実行するまで待ってください。複数のツール呼出しは index で組立てます。
+Tool fragments may not be valid JSON. Do not execute them in a callback; wait for agent validation of the complete response. Multiple calls are assembled by index.
 
-`-NoStream` は一括受信を選択します。この場合も完成した reasoning／本文のイベントとツールの増分出力は通知します。テスト用 `-Transport` は引き続き完成した応答オブジェクトを返す契約で、reasoning／本文を一度通知します。
+`-NoStream` buffers responses but still emits complete reasoning/text and live tool output. Test `-Transport` callbacks return complete provider responses and emit reasoning/text once.
 
-## キャンセルとエラー
+## Cancellation and errors
 
-`CancellationToken` は SSE の接続、待機、読取、429 などの再試行待機、ツールに伝播します。HTTP タイムアウトもストリーム全体へ適用します。完了前に切断された応答・不正 JSON・provider error・length／max_tokens の応答は失敗とし、その応答でツールを実行しません。部分的に受信したストリームは自動再試行しません。
+Cancellation tokens propagate through SSE connection, waits, reads, retry delays, and tools. HTTP timeouts cover the entire streamed response. Premature EOF, invalid JSON, provider errors, and length/max_tokens responses fail without executing that response's tools. Partially received streams are not automatically retried.
 
-モデル応答の未完了部分は保存しません。すでに実行して完了したツール結果とファイル変更は保持します。キャンセル中も同じ assistant 応答にあるツール呼出しへエラー結果を揃えて履歴を保存し、次のモデル応答へ進まず停止します。
+Incomplete response history is discarded. Completed tool results and file changes remain. On cancellation, calls in the same assistant response receive matching error results before saving; the agent stops without starting another model response.
 
-`-NoStream` は従来の Invoke-RestMethod を使うため、HTTP 受信中の CancellationToken による停止は行わず TimeoutSeconds に従います。CLI の Ctrl+C は通常の PowerShell 中断として処理します。
+Buffered `-NoStream` uses Invoke-RestMethod, so HTTP reception follows TimeoutSeconds rather than cancellation-token interruption.
 
-## CLI 表示
+## CLI display
 
-既定では `[reasoning]`、`[assistant]`、`[tool: NAME]` を表示します。reasoning は灰色、本文とツール出力は受信した順に表示します。ツールの終了時に既表示の出力全文を再表示せず、終了コードや全文ログの場所を表示します。`-HideReasoning` は表示だけを隠し、推論設定や履歴を変えません。
+Reasoning appears in gray, showing the last three lines by default. Ctrl+O expands/collapses the complete reasoning in native interactive mode. Assistant text and tool output stream in receive order. Tool completion displays status/log paths without duplicating output already shown. `-HideReasoning` only changes presentation.
 
-ストリーミングと一括受信のいずれも、モジュールの戻り値は最終本文です。CLI はこの戻り値を再表示しません。プログラムから最終回答を取得する用途は `Invoke-GoAgent` を使ってください。
+The module returns final assistant text in both modes. The CLI does not print that return value again. Use `Invoke-GoAgent` to obtain the final answer programmatically.

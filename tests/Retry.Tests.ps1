@@ -23,7 +23,7 @@ try {
                     $requests.Add(($reader.ReadToEnd() | ConvertFrom-Json -AsHashtable));$reader.Dispose()
                     $context.Response.ContentType='application/json'
                     if ($i -eq 0 -and $case.status -ne 200) {$context.Response.StatusCode=$case.status;$context.Response.AddHeader('Retry-After','1');$json='{"error":"mock"}'}
-                    else {$json='{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"保存成功"}}]}'}
+                    else {$json='{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Saved successfully"}}]}'}
                     $bytes=[Text.Encoding]::UTF8.GetBytes($json);$context.Response.OutputStream.Write($bytes,0,$bytes.Length);$context.Response.Close()
                 }
                 @{requests=$requests.ToArray()}
@@ -34,18 +34,18 @@ try {
             while (-not (Test-Path $ready)) {if ([datetime]::UtcNow -gt $deadline) {throw 'Server startup timeout'};Start-Sleep -Milliseconds 50}
             if ($case.name -eq 'CLI') {
                 $sessionDir=Join-Path $root 'cli-sessions'
-                $cliOutput=& (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $PSScriptRoot '../Start-GoAgent.ps1') -Workspace $root -SessionDirectory $sessionDir -BaseUri "http://127.0.0.1:$port/v1" -NoStream -Prompt '自動保存してください' 6>&1 | Out-String
-                Assert ($LASTEXITCODE -eq 0 -and $cliOutput.Contains('保存成功')) 'single prompt CLI completes request'
+                $cliOutput=& (Get-Process -Id $PID).Path -NoProfile -File (Join-Path $PSScriptRoot '../Start-GoAgent.ps1') -Workspace $root -SessionDirectory $sessionDir -BaseUri "http://127.0.0.1:$port/v1" -NoStream -Prompt 'Save the session automatically' 6>&1 | Out-String
+                Assert ($LASTEXITCODE -eq 0 -and $cliOutput.Contains('Saved successfully')) 'single prompt CLI completes request'
                 $files=@(Get-ChildItem $sessionDir -Filter '*.session.json')
                 Assert ($files.Count -eq 1) 'CLI automatically creates session without SessionPath'
                 $saved=Import-GoSession $files[0].FullName
-                Assert ($saved.History.Count -eq 2 -and $saved.History[0].text -eq '自動保存してください') 'automatic session contains request and final answer'
+                Assert ($saved.History.Count -eq 2 -and $saved.History[0].text -eq 'Save the session automatically') 'automatic session contains request and final answer'
             } else {
                 $a=New-GoAgent -Workspace $root -BaseUri "http://127.0.0.1:$port/v1" -MaxRetries $case.retries
                 $events=[Collections.Generic.List[object]]::new();$failed=$false;$answer=''
                 try {$answer=Invoke-GoAgent $a 'test' -NoStream:(-not $case.stream) -OnEvent {$events.Add($args[0])}} catch {$failed=$true}
                 if ($case.steps -eq 2) {
-                    Assert ($answer -eq '保存成功' -and -not $failed) "$($case.name) automatically resends transient failure"
+                    Assert ($answer -eq 'Saved successfully' -and -not $failed) "$($case.name) automatically resends transient failure"
                     Assert (@($events | Where-Object type -EQ retry).Count -eq 1) "$($case.name) reports retry progress"
                     Assert ($a.History.Count -eq 2) "$($case.name) does not duplicate user history"
                 } else {
