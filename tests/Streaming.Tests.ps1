@@ -38,12 +38,12 @@ function Start-Server([string]$Protocol,[string]$Scenario='Normal') {
                 if ($scenario -eq 'Retry' -and $step -eq 0) {$context.Response.StatusCode=429;$context.Response.Close();continue}
                 if ($scenario -eq 'Json') {
                     $context.Response.ContentType='application/json'
-                    $bytes=[Text.Encoding]::UTF8.GetBytes('{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"JSON完了","reasoning_content":"JSON reasoning"}}]}')
+                    $bytes=[Text.Encoding]::UTF8.GetBytes('{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"JSON complete","reasoning_content":"JSON reasoning"}}]}')
                     $context.Response.OutputStream.Write($bytes,0,$bytes.Length);$context.Response.Close();continue
                 }
                 $context.Response.ContentType='text/event-stream; charset=utf-8';$context.Response.SendChunked=$true
                 $first=if ($scenario -eq 'Retry') {$step -eq 1} else {$step -eq 0}
-                $reason=if ($first) {'考える'} else {'確認'}
+                $reason=if ($first) {'Think €'} else {'Check €'}
                 switch ($protocol) {
                     Chat {Send @{choices=@(@{index=0;delta=@{reasoning=$reason;reasoning_content=$reason};finish_reason=$null})} -MultiLine}
                     Messages {
@@ -56,7 +56,7 @@ function Start-Server([string]$Protocol,[string]$Scenario='Normal') {
                 Start-Sleep -Milliseconds $(if ($scenario -in @('Cancel','Timeout')) {5000} else {600})
                 if ($scenario -eq 'Broken') {$context.Response.Close();break}
                 if ($scenario -eq 'Malformed') {Send '{broken';$context.Response.Close();break}
-                $text=if ($first) {'準備'} else {'完了'}
+                $text=if ($first) {'Ready €'} else {'Done €'}
                 switch ($protocol) {
                     Chat {foreach ($piece in @($text.Substring(0,1),$text.Substring(1))) {Send @{choices=@(@{index=0;delta=@{content=$piece};finish_reason=$null})}}}
                     Messages {
@@ -120,11 +120,11 @@ try {
             $session=Join-Path $root "$protocol.session.json"
             $answer=Invoke-GoAgent $agent 'stream test' -OnEvent $onEvent -SessionPath $session
             $null=Wait-Job $server.job -Timeout 10;$capture=Receive-Job $server.job -ErrorAction Stop
-            Assert ($answer -eq '完了') "$protocol assembled final text"
+            Assert ($answer -eq 'Done €') "$protocol assembled final text"
             $reasoning=@($events | Where-Object {$_.event.type -eq 'reasoning_delta'})
             $texts=@($events | Where-Object {$_.event.type -eq 'text_delta'})
-            Assert (($reasoning | ForEach-Object {$_.event.delta}) -join '' -eq '考える確認') "$protocol reasoning is separate and not duplicated"
-            Assert (($texts | ForEach-Object {$_.event.delta}) -join '' -eq '準備完了') "$protocol UTF-8 text deltas assembled"
+            Assert (($reasoning | ForEach-Object {$_.event.delta}) -join '' -eq 'Think €Check €') "$protocol reasoning is separate and not duplicated"
+            Assert (($texts | ForEach-Object {$_.event.delta}) -join '' -eq 'Ready €Done €') "$protocol UTF-8 text deltas assembled"
             Assert (($texts[0].time-$reasoning[0].time).TotalMilliseconds -ge 400) "$protocol reasoning callback fires before later network data"
             Assert (@($events | Where-Object {$_.event.type -eq 'tool_call_delta'}).Count -eq 2) "$protocol split tool arguments emitted"
             $start=@($events | Where-Object {$_.event.type -eq 'tool_start'})[0]
@@ -137,7 +137,7 @@ try {
             $second=$capture.requests[1].body | ConvertTo-Json -Depth 100
             Assert ($second.Contains('call-stream') -and $second.Contains('tool-last')) "$protocol tool results replayed"
             switch ($protocol) {
-                Chat {Assert ($agent.History[1].raw.reasoning_content -eq '考える') 'Chat reasoning replay field retained'}
+                Chat {Assert ($agent.History[1].raw.reasoning_content -eq 'Think €') 'Chat reasoning replay field retained'}
                 Messages {Assert ($agent.History[1].raw[0].signature -eq 'sig-opaque') 'Messages thinking signature retained'}
                 Responses {Assert ($agent.History[1].raw[0].encrypted_content -eq 'opaque') 'Responses encrypted reasoning item retained'}
             }
@@ -166,10 +166,10 @@ try {
             $failed=$false;$answer=$null
             try {$answer=Invoke-GoAgent $a 'test' -OnEvent $callback -CancellationToken $cts.Token} catch {$failed=$true}
             if ($scenario -in @('Malformed','Length','Cancel','Timeout')) {Assert ($failed -and $a.History.Count -eq 0 -and -not $a.Busy) "$scenario stream failure rolls back incomplete exchange"}
-            elseif ($scenario -eq 'Json') {Assert ($answer -eq 'JSON完了' -and @($events | Where-Object type -EQ text_delta).Count -eq 1) 'JSON fallback emits exactly one complete text event'}
+            elseif ($scenario -eq 'Json') {Assert ($answer -eq 'JSON complete' -and @($events | Where-Object type -EQ text_delta).Count -eq 1) 'JSON fallback emits exactly one complete text event'}
             else {
                 $null=Wait-Job $server.job -Timeout 10;$capture=Receive-Job $server.job -ErrorAction Stop
-                Assert ($answer -eq '完了' -and $capture.requests.Count -eq 3 -and @($events | Where-Object type -EQ reasoning_delta).Count -eq 2) '429 retries before streaming without duplicating deltas'
+                Assert ($answer -eq 'Done €' -and $capture.requests.Count -eq 3 -and @($events | Where-Object type -EQ reasoning_delta).Count -eq 2) '429 retries before streaming without duplicating deltas'
             }
         } finally {$cts.Dispose();Stop-Server $server}
     }
@@ -181,17 +181,17 @@ try {
             $options=@('-NoProfile','-File',$cli,'-Model','test','-Protocol','Chat','-Workspace',$root,'-Permission','Auto','-BaseUri',$server.uri,'-Prompt','CLI stream test')
             if ($hide) {$options+='-HideReasoning'}
             $display=(& $executable @options | Out-String)
-            Assert ($LASTEXITCODE -eq 0 -and @([regex]::Matches($display,'完了')).Count -eq 1 -and @([regex]::Matches($display,'tool-first')).Count -eq 1 -and $display.Contains('[tool: powershell]')) 'CLI displays streamed final answer and tool output exactly once'
-            Assert ($display.Contains('考える') -eq (-not $hide)) 'CLI HideReasoning controls display only'
+            Assert ($LASTEXITCODE -eq 0 -and @([regex]::Matches($display,'Done €')).Count -eq 1 -and @([regex]::Matches($display,'tool-first')).Count -eq 1 -and $display.Contains('[tool: powershell]')) 'CLI displays streamed final answer and tool output exactly once'
+            Assert ($display.Contains('Think €') -eq (-not $hide)) 'CLI HideReasoning controls display only'
         } finally {Stop-Server $server}
     }
     $updates=[Collections.Generic.List[string]]::new()
     $callback={param($e) $updates.Add($e.text)}.GetNewClosure()
     $a=New-GoAgent -Workspace $root -Permission Auto
-    $command='$bytes=[Text.Encoding]::UTF8.GetBytes("日");$stream=[Console]::OpenStandardOutput();$stream.Write($bytes,0,1);$stream.Flush();Start-Sleep -Milliseconds 500;$stream.Write($bytes,1,2);$stream.Flush();[Console]::Error.Write("stderr-live");Start-Sleep -Milliseconds 300'
+    $command='$bytes=[Text.Encoding]::UTF8.GetBytes("€");$stream=[Console]::OpenStandardOutput();$stream.Write($bytes,0,1);$stream.Flush();Start-Sleep -Milliseconds 500;$stream.Write($bytes,1,2);$stream.Flush();[Console]::Error.Write("stderr-live");Start-Sleep -Milliseconds 300'
     $r=Invoke-GoTool $a powershell @{command=$command} -OnUpdate $callback
     $output=$updates -join ''
-    Assert (-not $r.isError -and $output.Contains('日') -and $output.Contains('stderr-live') -and -not $output.Contains([char]0xFFFD)) 'tool streaming preserves partial UTF-8 bytes and includes stderr'
+    Assert (-not $r.isError -and $output.Contains('€') -and $output.Contains('stderr-live') -and -not $output.Contains([char]0xFFFD)) 'tool streaming preserves partial UTF-8 bytes and includes stderr'
     $a=New-GoAgent -Model test -Protocol Chat -Workspace $root -ReasoningEffort High
     $request=& $module {param($a) New-GoRequest $a $true} $a
     Assert ($request.Body.reasoning_effort -eq 'high' -and $request.Body.stream) 'Chat optional reasoning effort sent'

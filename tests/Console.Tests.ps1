@@ -10,14 +10,14 @@ $output=& {
     & $render @{type='reasoning_delta';delta="hidden one`nhidden two`n"}
     & $render @{type='reasoning_delta';delta="last one`nlast two`nlast three"}
     & $render @{type='ui_tick'}
-    & $render @{type='text_delta';delta='本文'}
+    & $render @{type='text_delta';delta='Assistant text'}
     & $render @{type='assistant_end'}
 } 6>&1 | Out-String
 Assert (-not $output.Contains('hidden one') -and -not $output.Contains('hidden two')) 'compact panel hides older reasoning lines'
 Assert ($output.Contains('last one') -and $output.Contains('last three')) 'compact panel shows last three lines'
 Assert ($state.reasoning.Contains('hidden one')) 'full reasoning retained for expansion'
 Assert ($state.events.Count -eq 5) 'UI ticks never enter transcript'
-Assert ($output.Contains('本文')) 'reasoning panel keeps assistant text separate'
+Assert ($output.Contains('Assistant text')) 'reasoning panel keeps assistant text separate'
 $state.expanded=$true
 $output=Write-GoReasoningSummary $state 6>&1 | Out-String
 Assert ($output.Contains('hidden one') -and $output.Contains('last three')) 'expanded panel displays complete reasoning'

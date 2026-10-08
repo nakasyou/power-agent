@@ -41,7 +41,7 @@ function New-GoConsoleRenderer {
                     $state.reasoning+=$event.delta
                     if ($state.native -and -not $state.replaying) {
                         if ($state.expanded) {
-                            if ($state.reasonRows -eq 0) {Write-Host '[reasoning · Ctrl+O 折りたたむ]' -ForegroundColor DarkGray;$state.reasonRows=1}
+                            if ($state.reasonRows -eq 0) {Write-Host '[reasoning · Ctrl+O collapse]' -ForegroundColor DarkGray;$state.reasonRows=1}
                             Write-Host $event.delta -NoNewline -ForegroundColor DarkGray
                         } else {& $state.live $state}
                     }
@@ -77,7 +77,7 @@ function New-GoConsoleRenderer {
             }
             'retry' {
                 if ($state.section) {Write-Host ''; $state.section=$null}
-                Write-Host "↻ 自動再送 $($event.attempt)/$($event.maxRetries) · $($event.delaySeconds)秒後 · HTTP $($event.status)" -ForegroundColor Yellow
+                Write-Host "↻ Retry $($event.attempt)/$($event.maxRetries) · $($event.delaySeconds)seconds · HTTP $($event.status)" -ForegroundColor Yellow
             }
             'agent_error' {if ($state.section) {Write-Host ''; $state.section=$null}}
         }
@@ -101,10 +101,10 @@ function Write-GoReasoningSummary {
     param([hashtable]$State)
     if (-not $State.reasoning) {return}
     if ($State.expanded) {
-        Write-Host '[reasoning · Ctrl+O 折りたたむ]' -ForegroundColor DarkGray
+        Write-Host '[reasoning · Ctrl+O collapse]' -ForegroundColor DarkGray
         Write-Host $State.reasoning -ForegroundColor DarkGray
     } else {
-        Write-Host '[reasoning · 末尾3行 · Ctrl+O 展開]' -ForegroundColor DarkGray
+        Write-Host '[reasoning · last 3 lines · Ctrl+O expand]' -ForegroundColor DarkGray
         foreach ($line in (& $State.tail $State.reasoning)) {Write-Host $line -ForegroundColor DarkGray}
     }
 }
@@ -120,7 +120,7 @@ function Write-GoReasoningLive {
     [Console]::SetCursorPosition(0,$State.reasonTop)
     for ($i=0;$i -lt $State.reasonRows;$i++) {Write-Host (' '*($width-1))}
     [Console]::SetCursorPosition(0,$State.reasonTop)
-    Write-Host '[reasoning · Ctrl+O 展開]' -ForegroundColor DarkGray
+    Write-Host '[reasoning · Ctrl+O expand]' -ForegroundColor DarkGray
     $lines=@(& $State.tail $State.reasoning $width)
     foreach ($line in $lines) {Write-Host $line -ForegroundColor DarkGray}
     $State.reasonRows=1+$lines.Count
@@ -152,7 +152,7 @@ function Get-GoSessionList {
             $state=Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json -AsHashtable
             if ($state.Version -ne 1 -or $state.Workspace -ne $Workspace) {continue}
             $first=@($state.History | Where-Object kind -EQ 'user' | Select-Object -First 1)
-            $title=if ($first.Count) {($first[0].text -replace '\s+',' ')} else {'新しい会話'}
+            $title=if ($first.Count) {($first[0].text -replace '\s+',' ')} else {'New conversation'}
             [pscustomobject]@{Path=$file.FullName;Id=$state.Id;Model=$state.Model;Title=$title;Updated=$file.LastWriteTime;Messages=@($state.History).Count}
         } catch {Write-Verbose "Skipping invalid session: $($file.Name)"}
     }
@@ -166,7 +166,7 @@ function Show-GoTerminalStatus {
     Write-Host "$($Agent.Model) · $($Agent.Permission) · reasoning $($Agent.ReasoningEffort) / budget $($Agent.ThinkingBudget) · $($Agent.History.Count) messages" -ForegroundColor Gray
     Write-Host " $($Agent.Workspace)" -ForegroundColor DarkGray
     Write-Host " session: $([IO.Path]::GetFileName($SessionPath))" -ForegroundColor DarkGray
-    Write-Host ' Enter 送信 · Alt+Enter 改行 · ↑↓ 履歴 · Ctrl+O reasoning · Ctrl+C 入力取消 · Ctrl+D 終了 · /help' -ForegroundColor DarkGray
+    Write-Host ' Enter send · Alt+Enter newline · ↑↓ history · Ctrl+O reasoning · Ctrl+C clear · Ctrl+D exit · /help' -ForegroundColor DarkGray
 }
 function Read-GoTerminalInput {
     param([Collections.Generic.List[string]]$History,[switch]$Plain,[scriptblock]$OnToggleReasoning)
@@ -290,8 +290,8 @@ function Select-GoTerminalItem {
             for ($row=0;$row -lt $drawn;$row++) {Write-Host (' '*$width)}
             $origin=[Math]::Min($origin,[Math]::Max(0,[Console]::BufferHeight-$drawn))
             [Console]::SetCursorPosition(0,$origin)
-            Write-Host "$Title · ↑↓ 選択 · Enter 決定 · Esc 取消" -ForegroundColor Cyan
-            Write-Host "検索: $filter" -ForegroundColor Gray
+            Write-Host "$Title · ↑↓ select · Enter confirm · Esc cancel" -ForegroundColor Cyan
+            Write-Host "Search: $filter" -ForegroundColor Gray
             $visible=[Math]::Min($height,$matches.Count-$start)
             for ($row=0;$row -lt $visible;$row++) {
                 $position=$start+$row
@@ -301,7 +301,7 @@ function Select-GoTerminalItem {
                 $prefix=if ($position -eq $selected) {'❯ '} else {'  '}
                 Write-Host ($prefix+$label) -ForegroundColor $(if ($position -eq $selected) {'Green'} else {'DarkGray'})
             }
-            if (-not $matches.Count) {Write-Host '該当なし' -ForegroundColor DarkGray;$visible=1}
+            if (-not $matches.Count) {Write-Host 'No matches' -ForegroundColor DarkGray;$visible=1}
             $drawn=2+$visible
             $origin=[Math]::Min($origin,[Math]::Max(0,[Console]::BufferHeight-$drawn-1))
             $key=[Console]::ReadKey($true)

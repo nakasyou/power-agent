@@ -96,8 +96,8 @@ try {
     $diff=& $module {param($a,$b) Get-GoDiff sample.txt $a $b} $before $after
     Assert (@([regex]::Matches($diff.patch,'(?m)^@@')).Count -eq 2) 'diff uses separate context hunks for distant changes'
     Assert-Patch $before $after $diff.patch
-    $r=Tool write @{path='sub/new.txt';content='日本語'}
-    Assert (-not $r.isError -and (Text sub/new.txt) -ceq '日本語') 'write creates parents and UTF-8 data'
+    $r=Tool write @{path='sub/new.txt';content='café'}
+    Assert (-not $r.isError -and (Text sub/new.txt) -ceq 'café') 'write creates parents and UTF-8 data'
     Put big.txt ((1..2500 | ForEach-Object {"row $_"}) -join "`n")
     $r=Tool read @{path='big.txt'}
     Assert (-not $r.isError -and $r.details.truncation.outputLines -eq 2000 -and $r.text.Contains('offset=2001')) 'read defaults to 2000 lines with continuation'
@@ -105,10 +105,10 @@ try {
     Assert ($r.text.StartsWith("row 2001`nrow 2002`nrow 2003") -and $r.text.Contains('offset=2004')) 'read honors offset and limit'
     $r=Tool read @{path='big.txt';offset=3000}
     Assert $r.isError 'read rejects out-of-range offset'
-    Put huge.txt ('あ'*20000)
+    Put huge.txt ('€'*20000)
     $r=Tool read @{path='huge.txt'}
     Assert ($r.details.truncation.firstLineExceedsLimit -and $r.text.Contains('powershell')) 'read handles one line over 50 KiB without partial text'
-    Put bytes.txt ((1..200 | ForEach-Object {'あ'*200}) -join "`n")
+    Put bytes.txt ((1..200 | ForEach-Object {'€'*200}) -join "`n")
     $r=Tool read @{path='bytes.txt'}
     Assert ($r.details.truncation.truncatedBy -eq 'bytes' -and $r.details.truncation.outputBytes -le 51200 -and -not $r.text.Contains([char]0xFFFD)) 'read byte limit preserves UTF-8 characters'
     Put empty.txt ''
@@ -168,8 +168,8 @@ try {
         $r=Tool find @{path='search';pattern='*'}
         Assert (-not $r.text.Contains('outside')) 'search skips symlink recursion'
     }
-    $r=Tool powershell @{command="Write-Output '日本語'; [Console]::Error.WriteLine('stderr')"}
-    Assert (-not $r.isError -and $r.text.Contains('日本語') -and $r.text.Contains('stderr') -and $r.details.exitCode -eq 0) 'powershell captures UTF-8 and stderr'
+    $r=Tool powershell @{command="Write-Output 'café'; [Console]::Error.WriteLine('stderr')"}
+    Assert (-not $r.isError -and $r.text.Contains('café') -and $r.text.Contains('stderr') -and $r.details.exitCode -eq 0) 'powershell captures UTF-8 and stderr'
     $r=Tool powershell @{command='exit 7'}
     Assert ($r.isError -and $r.details.exitCode -eq 7) 'nonzero exit is an error result'
     $r=Tool powershell @{command="throw 'broken'"}
@@ -178,7 +178,7 @@ try {
     Assert (-not $r.isError -and $r.structuredContent.truncated -and $r.text.Contains('line 3000') -and -not $r.text.StartsWith("line 1`n") -and (Test-Path $r.details.fullOutputPath)) 'powershell retains output tail and full output file'
     $log=Tool read @{path=$r.details.fullOutputPath;offset=1;limit=1}
     Assert ($log.text.StartsWith('line 1')) 'read can inspect saved full command output'
-    $r=Tool powershell @{command="[Console]::Write('あ'*40000)"}
+    $r=Tool powershell @{command="[Console]::Write('€'*40000)"}
     Assert ($r.structuredContent.truncated -and -not $r.text.Contains([char]0xFFFD) -and [Text.Encoding]::UTF8.GetByteCount($r.structuredContent.output) -le 51200) 'single huge shell line truncates at UTF-8 boundaries'
     $r=Tool powershell @{command="Write-Output 'before-timeout'; Start-Sleep 10";timeout=0.7}
     Assert ($r.isError -and $r.text.Contains('before-timeout') -and $r.text.Contains('timed out')) 'fractional timeout keeps partial output'

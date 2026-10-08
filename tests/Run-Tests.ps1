@@ -19,23 +19,23 @@ try {
             $state.step++
             if ($state.step -eq 1) {
                 switch ($protocol) {
-                    'Chat' { @{choices=@(@{finish_reason='tool_calls';message=@{role='assistant';content=$null;reasoning_content='preserve me';tool_calls=@(@{id='call-1';type='function';function=@{name='write';arguments='{"path":"hello.txt","content":"こんにちは"}'}})}})} }
-                    'Messages' { @{stop_reason='tool_use';content=@(@{type='thinking';thinking='preserve me';signature='sig'},@{type='tool_use';id='call-1';name='write';input=@{path='hello.txt';content='こんにちは'}})} }
-                    'Responses' { @{status='completed';output=@(@{type='reasoning';id='r1';summary=@()},@{type='function_call';id='f1';call_id='call-1';name='write';arguments='{"path":"hello.txt","content":"こんにちは"}'})} }
+                    'Chat' { @{choices=@(@{finish_reason='tool_calls';message=@{role='assistant';content=$null;reasoning_content='preserve me';tool_calls=@(@{id='call-1';type='function';function=@{name='write';arguments='{"path":"hello.txt","content":"Hello café"}'}})}})} }
+                    'Messages' { @{stop_reason='tool_use';content=@(@{type='thinking';thinking='preserve me';signature='sig'},@{type='tool_use';id='call-1';name='write';input=@{path='hello.txt';content='Hello café'}})} }
+                    'Responses' { @{status='completed';output=@(@{type='reasoning';id='r1';summary=@()},@{type='function_call';id='f1';call_id='call-1';name='write';arguments='{"path":"hello.txt","content":"Hello café"}'})} }
                 }
             } else {
                 switch ($protocol) {
-                    'Chat' { @{choices=@(@{finish_reason='stop';message=@{role='assistant';content='完了'}})} }
-                    'Messages' { @{stop_reason='end_turn';content=@(@{type='text';text='完了'})} }
-                    'Responses' { @{status='completed';output=@(@{type='message';id='m1';role='assistant';content=@(@{type='output_text';text='完了'})})} }
+                    'Chat' { @{choices=@(@{finish_reason='stop';message=@{role='assistant';content='Done €'}})} }
+                    'Messages' { @{stop_reason='end_turn';content=@(@{type='text';text='Done €'})} }
+                    'Responses' { @{status='completed';output=@(@{type='message';id='m1';role='assistant';content=@(@{type='output_text';text='Done €'})})} }
                 }
             }
         }.GetNewClosure()
         $agent=New-GoAgent -Model test -Protocol $protocol -Workspace $root -Permission Auto -Transport $transport
         $session=Join-Path $root "$protocol.json"
-        $answer=Invoke-GoAgent $agent 'ファイルを作って' -SessionPath $session
-        Assert ($answer -eq '完了') "$protocol tool loop returns final answer"
-        Assert ([IO.File]::ReadAllText((Join-Path $root 'hello.txt')) -eq 'こんにちは') "$protocol tool writes UTF-8"
+        $answer=Invoke-GoAgent $agent 'Create a file' -SessionPath $session
+        Assert ($answer -eq 'Done €') "$protocol tool loop returns final answer"
+        Assert ([IO.File]::ReadAllText((Join-Path $root 'hello.txt')) -eq 'Hello café') "$protocol tool writes UTF-8"
         Assert ($state.requests.Count -eq 2) "$protocol performs two requests"
         Assert ($state.requests[0].Headers['x-opencode-session'] -eq $state.requests[1].Headers['x-opencode-session']) "$protocol stable session header"
         $second=$state.requests[1].Body | ConvertTo-Json -Depth 100 -Compress
