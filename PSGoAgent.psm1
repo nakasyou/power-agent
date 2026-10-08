@@ -512,7 +512,7 @@ function New-GoRequest($Agent,[bool]$Stream=$false) {
         $credential=Get-GoCodexCredential $Agent.GlobalConfigDirectory
         $key=$credential.AccessToken
         $headers['chatgpt-account-id']=$credential.AccountId;$headers.originator='power-agent'
-        $headers['User-Agent']='power-agent/'+(Get-GoVersion);$headers['OpenAI-Beta']='responses=experimental';$headers.session_id=$Agent.Id
+        $headers['User-Agent']='power-agent/'+(Get-GoVersion);$headers['OpenAI-Beta']='responses=experimental';$headers['session-id']=$Agent.Id;$headers['x-client-request-id']=$Agent.Id
     }
     if ($key) {$headers.Authorization="Bearer $key"}
     if ($Agent.Provider -eq 'OpenCodeGo') {$headers['x-opencode-session']=$Agent.Id}
