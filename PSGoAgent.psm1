@@ -11,9 +11,10 @@ function Set-GoModel {
     if (-not $Model.Trim()) {throw 'Model cannot be empty.'}
     if ($Protocol -eq 'Auto') {
         $entry=@(Get-GoModelCatalog | Where-Object Model -EQ $Model)
-        if ($Agent.Provider -ne 'OpenCodeGo') {$Protocol='Chat'} elseif ($entry.Count -ne 1) {throw 'Unknown model. Use /model NAME Chat|Messages|Responses.'} else {$Protocol=$entry[0].Protocol}
+        if ($Agent.Provider -eq 'Codex') {$Protocol='Responses'} elseif ($Agent.Provider -ne 'OpenCodeGo') {$Protocol='Chat'} elseif ($entry.Count -ne 1) {throw 'Unknown model. Use /model NAME Chat|Messages|Responses.'} else {$Protocol=$entry[0].Protocol}
     }
     if ($Agent.Provider -eq 'OpenAI' -and $Protocol -eq 'Messages') {throw 'OpenAI-compatible providers support Chat or Responses.'}
+    if ($Agent.Provider -eq 'Codex' -and $Protocol -ne 'Responses') {throw 'Codex requires Responses.'}
     if ($Agent.Model -eq $Model -and $Agent.Protocol -eq $Protocol) {return}
     # Provider reasoning signatures and response IDs cannot be reused by another model.
     # Convert from canonical text/calls without replaying tools or altering their results.
@@ -142,6 +143,105 @@ function Get-GoScopedInstructions {
     $chain -join "`n`n"
 }
 
+function Invoke-GoOAuthRequest {
+    param([string]$Uri,[hashtable]$Body,[string]$ContentType='application/json')
+    $payload=if ($ContentType -eq 'application/json') {$Body | ConvertTo-Json -Depth 20 -Compress} else {$Body}
+    $response=Invoke-RestMethod -Uri $Uri -Method Post -ContentType $ContentType -Body $payload -TimeoutSec 30 -SkipHttpErrorCheck -StatusCodeVariable status
+    @{Status=[int]$status;Body=$response | ConvertTo-Json -Depth 30 | ConvertFrom-Json -AsHashtable}
+}
+function Save-GoCodexCredential {
+    param([string]$Directory,[hashtable]$Credential)
+    $null=[IO.Directory]::CreateDirectory($Directory)
+    $path=Join-Path $Directory 'codex-auth.json';$temporary=$path+'.'+[guid]::NewGuid()+'.tmp'
+    $bytes=[Text.Encoding]::UTF8.GetBytes(($Credential | ConvertTo-Json -Depth 10 -Compress))
+    if ($IsWindows) {$bytes=[Text.Encoding]::UTF8.GetBytes((@{dpapi=[Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Protect($bytes,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser))} | ConvertTo-Json -Compress))}
+    try {
+        # Create Unix files with private permissions before writing token bytes.
+        if (-not $IsWindows) {
+            $options=[IO.FileStreamOptions]::new();$options.Mode=[IO.FileMode]::CreateNew;$options.Access=[IO.FileAccess]::Write
+            if ($options.PSObject.Properties['UnixCreateMode']) {$options.UnixCreateMode=[IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite}
+            $stream=[IO.FileStream]::new($temporary,$options)
+            if (-not $options.PSObject.Properties['UnixCreateMode']) {& chmod 600 $temporary;if ($LASTEXITCODE -ne 0) {$stream.Dispose();throw 'Cannot protect Codex credential file.'}}
+        } else {$stream=[IO.File]::Open($temporary,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write)}
+        try {$stream.Write($bytes,0,$bytes.Length)} finally {$stream.Dispose()}
+        [IO.File]::Move($temporary,$path,$true)
+    } finally {if (Test-Path $temporary) {Remove-Item -LiteralPath $temporary -Force}}
+}
+function Read-GoCodexCredential {
+    param([string]$Directory)
+    $path=Join-Path $Directory 'codex-auth.json'
+    if (-not (Test-Path -LiteralPath $path)) {throw 'Not logged in to Codex. Run -Login first.'}
+    $data=Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable
+    if ($data.ContainsKey('dpapi')) {
+        if (-not $IsWindows) {throw 'This credential is protected for its Windows user.'}
+        $bytes=[Security.Cryptography.ProtectedData]::Unprotect([Convert]::FromBase64String($data.dpapi),$null,[Security.Cryptography.DataProtectionScope]::CurrentUser)
+        $data=[Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json -AsHashtable
+    }
+    $data
+}
+function ConvertTo-GoCodexCredential {
+    param([hashtable]$Token)
+    if (-not $Token.access_token -or -not $Token.refresh_token -or -not $Token.expires_in) {throw 'Invalid Codex token response.'}
+    try {
+        $part=$Token.access_token.Split('.')[1].Replace('-','+').Replace('_','/')
+        $part=$part.PadRight($part.Length+((4-$part.Length%4)%4),'=')
+        $claims=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($part)) | ConvertFrom-Json -AsHashtable
+        $account=$claims['https://api.openai.com/auth'].chatgpt_account_id
+    } catch {throw 'Codex token is missing account claims.'}
+    if (-not $account) {throw 'Codex token is missing an account ID.'}
+    @{AccessToken=$Token.access_token;RefreshToken=$Token.refresh_token;AccountId=$account;ExpiresAt=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()+[long]$Token.expires_in}
+}
+function Connect-GoCodex {
+    [CmdletBinding()]
+    param([string]$GlobalConfigDirectory=(Join-Path ([Environment]::GetFolderPath('UserProfile')) '.config/power-agent'),
+        [ValidateRange(1,900)][int]$TimeoutSeconds=900,[Threading.CancellationToken]$CancellationToken=[Threading.CancellationToken]::None,
+        [scriptblock]$OnCode={param($Code) Write-Host "Open $($Code.Url) and enter code $($Code.Code)" -ForegroundColor Cyan},
+        [scriptblock]$Request=${function:Invoke-GoOAuthRequest})
+    $client='app_EMoamEEZ73f0CkXaXp7hrann';$base='https://auth.openai.com'
+    $CancellationToken.ThrowIfCancellationRequested()
+    $start=& $Request "$base/api/accounts/deviceauth/usercode" @{client_id=$client} 'application/json'
+    if ($start.Status -ne 200) {throw "Codex device login failed (HTTP $($start.Status)). Enable device code login in your ChatGPT settings."}
+    $device=$start.Body
+    $code=if ($device.ContainsKey('user_code')) {$device.user_code} else {$device.usercode}
+    if (-not $device.device_auth_id -or -not $code -or -not $device.ContainsKey('interval')) {throw 'Invalid Codex device code response.'}
+    $interval=[Math]::Max(1,[Math]::Min(60,[double]$device.interval));$clock=[Diagnostics.Stopwatch]::StartNew()
+    $null=& $OnCode @{Url="$base/codex/device";Code=$code}
+    while ($clock.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+        $CancellationToken.ThrowIfCancellationRequested()
+        $poll=& $Request "$base/api/accounts/deviceauth/token" @{device_auth_id=$device.device_auth_id;user_code=$code} 'application/json'
+        if ($poll.Status -eq 200) {
+            if (-not $poll.Body.authorization_code -or -not $poll.Body.code_verifier) {throw 'Invalid Codex authorization response.'}
+            $exchange=& $Request "$base/oauth/token" @{grant_type='authorization_code';client_id=$client;code=$poll.Body.authorization_code;code_verifier=$poll.Body.code_verifier;redirect_uri="$base/deviceauth/callback"} 'application/x-www-form-urlencoded'
+            if ($exchange.Status -ne 200) {throw "Codex token exchange failed (HTTP $($exchange.Status))."}
+            $credential=ConvertTo-GoCodexCredential $exchange.Body
+            Save-GoCodexCredential $GlobalConfigDirectory $credential
+            return [pscustomobject]@{LoggedIn=$true;ExpiresAt=$credential.ExpiresAt}
+        }
+        $errorCode=if ($poll.Body.ContainsKey('error')) {if ($poll.Body.error -is [hashtable]) {$poll.Body.error.code} else {$poll.Body.error}} else {''}
+        if ($errorCode -eq 'slow_down') {$interval=[Math]::Min(60,$interval+5)}
+        elseif ($poll.Status -notin @(403,404) -and $errorCode -ne 'deviceauth_authorization_pending') {throw "Codex device authorization failed (HTTP $($poll.Status))."}
+        $remaining=$TimeoutSeconds-$clock.Elapsed.TotalSeconds
+        if ($remaining -le 0) {break}
+        $null=[Threading.Tasks.Task]::Delay([TimeSpan]::FromSeconds([Math]::Min($interval,$remaining)),$CancellationToken).GetAwaiter().GetResult()
+    }
+    throw 'Codex device authorization expired. Start login again.'
+}
+function Get-GoCodexCredential {
+    param([string]$Directory,[scriptblock]$Request=${function:Invoke-GoOAuthRequest})
+    $credential=Read-GoCodexCredential $Directory
+    if ([long]$credential.ExpiresAt -le [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()+60) {
+        $result=& $Request 'https://auth.openai.com/oauth/token' @{grant_type='refresh_token';client_id='app_EMoamEEZ73f0CkXaXp7hrann';refresh_token=$credential.RefreshToken} 'application/x-www-form-urlencoded'
+        if ($result.Status -ne 200) {throw 'Codex token refresh failed. Log in again.'}
+        $credential=ConvertTo-GoCodexCredential $result.Body
+        Save-GoCodexCredential $Directory $credential
+    }
+    $credential
+}
+function Disconnect-GoCodex {
+    param([string]$GlobalConfigDirectory=(Join-Path ([Environment]::GetFolderPath('UserProfile')) '.config/power-agent'))
+    Remove-Item -LiteralPath (Join-Path $GlobalConfigDirectory 'codex-auth.json') -Force -ErrorAction SilentlyContinue
+}
+
 function New-GoAgent {
     [CmdletBinding()]
     param(
@@ -149,7 +249,7 @@ function New-GoAgent {
         [ValidateSet('Auto','Chat','Messages','Responses')][string]$Protocol = 'Auto',
         [string]$Workspace = (Get-Location).Path,
         [string]$BaseUri = '',
-        [ValidateSet('OpenCodeGo','OpenAI')][string]$Provider='OpenCodeGo',
+        [ValidateSet('OpenCodeGo','OpenAI','Codex')][string]$Provider='OpenCodeGo',
         [string]$ApiKey,
         [ValidateRange(1,1000)][int]$MaxTurns = 30,
         [ValidateRange(1,65536)][int]$MaxTokens = 8192,
@@ -170,10 +270,11 @@ function New-GoAgent {
     $Model = $Model -replace '^opencode-go/', ''
     if ($Protocol -eq 'Auto') {
         $entry = @(Get-GoModelCatalog | Where-Object Model -EQ $Model)
-        if ($Provider -eq 'OpenAI') {$Protocol='Chat'} elseif ($entry.Count -ne 1) { throw "Unknown model '$Model'. Specify -Protocol Chat, Messages or Responses." } else {$Protocol=$entry[0].Protocol}
+        if ($Provider -eq 'Codex') {$Protocol='Responses'} elseif ($Provider -eq 'OpenAI') {$Protocol='Chat'} elseif ($entry.Count -ne 1) { throw "Unknown model '$Model'. Specify -Protocol Chat, Messages or Responses." } else {$Protocol=$entry[0].Protocol}
     }
-    if (-not $BaseUri) {$BaseUri=if ($Provider -eq 'OpenAI') {'https://api.openai.com/v1'} else {'https://opencode.ai/zen/go/v1'}}
+    if (-not $BaseUri) {$BaseUri=if ($Provider -eq 'Codex') {'https://chatgpt.com/backend-api/codex'} elseif ($Provider -eq 'OpenAI') {'https://api.openai.com/v1'} else {'https://opencode.ai/zen/go/v1'}}
     if ($Provider -eq 'OpenAI' -and $Protocol -eq 'Messages') {throw 'OpenAI-compatible providers support Chat or Responses.'}
+    if ($Provider -eq 'Codex' -and $Protocol -ne 'Responses') {throw 'Codex requires Responses.'}
     $uri = [uri]$BaseUri
     if (-not $uri.IsAbsoluteUri -or ($uri.Scheme -ne 'https' -and -not ($uri.Scheme -eq 'http' -and $uri.IsLoopback))) { throw 'BaseUri must be HTTPS (or loopback HTTP for tests).' }
     $system = @"
@@ -226,6 +327,11 @@ function New-GoRequest($Agent,[bool]$Stream=$false) {
     $key=$Agent.ApiKey
     if (-not $key) {$key=if ($Agent.Provider -eq 'OpenAI') {$env:OPENAI_API_KEY} else {$env:OPENCODE_API_KEY}}
     $headers=@{}
+    if ($Agent.Provider -eq 'Codex') {
+        $credential=Get-GoCodexCredential $Agent.GlobalConfigDirectory
+        $key=$credential.AccessToken
+        $headers['chatgpt-account-id']=$credential.AccountId;$headers.originator='power-agent'
+    }
     if ($key) {$headers.Authorization="Bearer $key"}
     if ($Agent.Provider -eq 'OpenCodeGo') {$headers['x-opencode-session']=$Agent.Id}
     $body = @{model=$Agent.Model;stream=$Stream}
@@ -300,6 +406,7 @@ function New-GoRequest($Agent,[bool]$Stream=$false) {
             $body.tools=@($tools | ForEach-Object { @{type='function';name=$_.name;description=$_.description;parameters=$_.parameters;strict=$false} })
         }
     }
+    if ($Agent.Provider -eq 'Codex') {$body.stream=$true;$body.Remove('max_output_tokens');$body.parallel_tool_calls=$true}
     @{Uri="$($Agent.BaseUri)/$endpoint";Headers=$headers;Body=$body}
 }
 
@@ -361,6 +468,7 @@ function Invoke-GoAgent {
     param([Parameter(Mandatory)]$Agent, [Parameter(Mandatory)][string]$Prompt, [string]$SessionPath,
         [Threading.CancellationToken]$CancellationToken=[Threading.CancellationToken]::None,[scriptblock]$OnToolUpdate,[scriptblock]$OnEvent,[switch]$NoStream)
     $CancellationToken.ThrowIfCancellationRequested()
+    if ($Agent.Provider -eq 'Codex' -and $NoStream) {throw 'Codex requires streaming. Omit -NoStream.'}
     if ($Agent.Busy) { throw 'This agent already has an active turn.' }
     $Agent.Busy=$true
     $checkpoint=$Agent.History.Count
@@ -423,7 +531,7 @@ function Save-GoSession {
 function Import-GoSession {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path,[string]$GlobalConfigDirectory=(Join-Path ([Environment]::GetFolderPath('UserProfile')) '.config/power-agent'),[ValidateSet('Ask','ReadOnly','Auto')][string]$Permission='Ask', [scriptblock]$Transport, [scriptblock]$Approve,
-        [string]$BaseUri='',[ValidateSet('OpenCodeGo','OpenAI')][string]$Provider='OpenCodeGo',[string]$ApiKey,
+        [string]$BaseUri='',[ValidateSet('OpenCodeGo','OpenAI','Codex')][string]$Provider='OpenCodeGo',[string]$ApiKey,
         [ValidateRange(1,1000)][int]$MaxTurns=30,
         [ValidateRange(1,65536)][int]$MaxTokens=8192,
         [ValidateRange(1,3600)][int]$TimeoutSeconds=120,[switch]$EnableImages,
@@ -441,4 +549,4 @@ function Import-GoSession {
     $agent
 }
 
-Export-ModuleMember -Function Set-GoModel,Set-GoReasoning,New-GoAgent,Invoke-GoAgent,Save-GoSession,Import-GoSession,Get-GoModelCatalog,Get-GoTools,Invoke-GoTool
+Export-ModuleMember -Function Connect-GoCodex,Disconnect-GoCodex,Set-GoModel,Set-GoReasoning,New-GoAgent,Invoke-GoAgent,Save-GoSession,Import-GoSession,Get-GoModelCatalog,Get-GoTools,Invoke-GoTool

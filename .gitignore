@@ -4,3 +4,5 @@ sessions/
 .env.*
 *.tmp
 .power-agent/
+
+codex-auth.json

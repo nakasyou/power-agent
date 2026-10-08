@@ -116,7 +116,7 @@ function Add-GoStreamEvent($State,[string]$Data,[scriptblock]$OnEvent) {
                 'response.function_call_arguments.delta' {
                     Publish-GoEvent $OnEvent @{type='tool_call_delta';index=$event.output_index;delta=$event.delta}
                 }
-                'response.completed' {$State.response=$event.response;$State.done=$true}
+                {$_ -in @('response.completed','response.done')} {$State.response=$event.response;$State.done=$true}
             }
         }
     }

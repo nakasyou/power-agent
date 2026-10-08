@@ -250,3 +250,14 @@ $env:OPENAI_API_KEY = 'your-key'
 ```
 
 OpenAI-compatible providers default to Chat and accept arbitrary model names. Select Responses explicitly if supported. Use `OPENAI_API_KEY` or `-ApiKey`; unauthenticated loopback endpoints are allowed. OpenCode-specific headers are not sent to these providers. Provider/endpoint settings are saved in sessions; credentials are never saved there. Both API-key environment variables are excluded from command child processes.
+
+## Codex device-code login
+
+```powershell
+./Start-GoAgent.ps1 -Login
+# Visit the displayed OpenAI URL and approve the displayed code.
+./Start-GoAgent.ps1 -Provider Codex -Model gpt-5.3-codex
+./Start-GoAgent.ps1 -Logout
+```
+
+Enable device-code login in your ChatGPT settings if required. Codex uses ChatGPT subscription authentication rather than an OpenAI API key, requires streaming Responses, and automatically refreshes expiring tokens. Credentials are stored separately under the global config directory, protected with Windows user DPAPI or Unix owner-only permissions. Tokens never enter session files. Device login and token refresh are verified with mocks; live account authorization must be completed by the user.
