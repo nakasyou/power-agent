@@ -2,6 +2,82 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Set-GoModel {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Agent,[Parameter(Mandatory)][string]$Model,
+        [ValidateSet('Auto','Chat','Messages','Responses')][string]$Protocol='Auto')
+    if ($Agent.Busy) {throw 'Cannot change models during an active turn.'}
+    $Model=$Model -replace '^opencode-go/',''
+    if (-not $Model.Trim()) {throw 'Model cannot be empty.'}
+    if ($Protocol -eq 'Auto') {
+        $entry=@(Get-GoModelCatalog | Where-Object Model -EQ $Model)
+        if ($entry.Count -ne 1) {throw 'Unknown model. Use /model NAME Chat|Messages|Responses.'}
+        $Protocol=$entry[0].Protocol
+    }
+    if ($Agent.Model -eq $Model -and $Agent.Protocol -eq $Protocol) {return}
+    # Provider reasoning signatures and response IDs cannot be reused by another model.
+    # Convert from canonical text/calls without replaying tools or altering their results.
+    $converted=[Collections.Generic.List[object]]::new()
+    foreach ($message in $Agent.History) {
+        if ($message.kind -ne 'assistant') {continue}
+        $calls=@($message.calls)
+        switch ($Protocol) {
+            'Chat' {
+                $raw=@{role='assistant';content=$message.text}
+                if ($calls.Count) {$raw.tool_calls=@(foreach ($call in $calls) {
+                    $arguments=if ($call.arguments -is [string]) {$call.arguments} else {$call.arguments | ConvertTo-Json -Depth 100 -Compress}
+                    @{id=$call.id;type='function';function=@{name=$call.name;arguments=$arguments}}
+                })}
+            }
+            'Messages' {
+                $raw=@(if ($message.text) {@{type='text';text=$message.text}};foreach ($call in $calls) {
+                    $arguments=if ($call.arguments -is [string]) {ConvertFrom-Json $call.arguments -AsHashtable} else {$call.arguments}
+                    @{type='tool_use';id=$call.id;name=$call.name;input=$arguments}
+                })
+            }
+            'Responses' {
+                $raw=@(if ($message.text) {@{type='message';role='assistant';content=@(@{type='output_text';text=$message.text})}};foreach ($call in $calls) {
+                    $arguments=if ($call.arguments -is [string]) {$call.arguments} else {$call.arguments | ConvertTo-Json -Depth 100 -Compress}
+                    @{type='function_call';call_id=$call.id;name=$call.name;arguments=$arguments}
+                })
+            }
+        }
+        $converted.Add(@{Message=$message;Raw=$raw})
+    }
+    foreach ($change in $converted) {$change.Message.raw=$change.Raw}
+    $Agent.Model=$Model;$Agent.Protocol=$Protocol
+    # Model-specific reasoning settings must be chosen explicitly for the new model.
+    $Agent.ReasoningEffort='Default';$Agent.ThinkingBudget=0
+}
+function Set-GoReasoning {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Agent,
+        [ValidateSet('Default','Low','Medium','High')][string]$Effort='Default',
+        [ValidateRange(0,65535)][int]$Budget=0)
+    if ($Agent.Busy) {throw 'Cannot change reasoning during an active turn.'}
+    if ($Agent.Protocol -eq 'Messages' -and $Effort -ne 'Default') {throw 'Messages models use /thinking BUDGET, not reasoning effort.'}
+    if ($Agent.Protocol -ne 'Messages' -and $Budget -gt 0) {throw 'Thinking budget is only supported by Messages models.'}
+    if ($Budget -gt 0 -and ($Budget -lt 1024 -or $Budget -ge $Agent.MaxTokens)) {throw 'Thinking budget must be at least 1024 and less than MaxTokens.'}
+    $Agent.ReasoningEffort=$Effort;$Agent.ThinkingBudget=$Budget
+}
+function Wait-GoRetry {
+    param([int]$Attempt,[int]$MaxRetries,[Threading.CancellationToken]$Token,[scriptblock]$OnEvent,[int]$Status=0,[double]$DelaySeconds=0)
+    if ($DelaySeconds -le 0) {$DelaySeconds=[Math]::Pow(2,$Attempt+1)}
+    $DelaySeconds=[Math]::Min(60,$DelaySeconds)
+    Publish-GoEvent $OnEvent @{type='retry';attempt=$Attempt+1;maxRetries=$MaxRetries;delaySeconds=$DelaySeconds;status=$Status}
+    $null=Wait-GoNetworkTask ([Threading.Tasks.Task]::Delay([TimeSpan]::FromSeconds($DelaySeconds),$Token)) $Token $OnEvent
+}
+
+function Wait-GoNetworkTask {
+    param($Task,[Threading.CancellationToken]$Token,[scriptblock]$OnEvent)
+    while (-not $Task.IsCompleted) {
+        $Token.ThrowIfCancellationRequested()
+        Publish-GoEvent $OnEvent @{type='ui_tick'}
+        [Threading.Thread]::Sleep(50)
+    }
+    $Task.GetAwaiter().GetResult()
+}
+
 function Get-GoModelCatalog {
     # Protocol routing from OpenCode Go documentation (2026-10-07).
     $catalog = [ordered]@{
@@ -30,7 +106,8 @@ function New-GoAgent {
         [scriptblock]$Approve,
         [switch]$EnableImages,
         [ValidateSet('Default','Low','Medium','High')][string]$ReasoningEffort='Default',
-        [ValidateRange(0,65535)][int]$ThinkingBudget=0
+        [ValidateRange(0,65535)][int]$ThinkingBudget=0,
+        [ValidateRange(0,10)][int]$MaxRetries=2
     )
     if ($ThinkingBudget -gt 0 -and ($ThinkingBudget -lt 1024 -or $ThinkingBudget -ge $MaxTokens)) {throw 'ThinkingBudget must be at least 1024 and less than MaxTokens.'}
     $root = (Resolve-Path -LiteralPath $Workspace).Path
@@ -56,7 +133,7 @@ $Instructions
     [pscustomobject]@{
         PSTypeName='PSGoAgent'; Version=1; Id=[guid]::NewGuid().ToString()
         Model=$Model; Protocol=$Protocol; Workspace=$root; BaseUri=$BaseUri.TrimEnd('/')
-        MaxTurns=$MaxTurns; MaxTokens=$MaxTokens; TimeoutSeconds=$TimeoutSeconds; Permission=$Permission
+        MaxRetries=$MaxRetries; MaxTurns=$MaxTurns; MaxTokens=$MaxTokens; TimeoutSeconds=$TimeoutSeconds; Permission=$Permission
         System=$system; History=[Collections.Generic.List[object]]::new()
         Transport=$Transport; Approve=$Approve; Busy=$false; EnableImages=[bool]$EnableImages; ReasoningEffort=$ReasoningEffort; ThinkingBudget=$ThinkingBudget
     }
@@ -172,13 +249,14 @@ function Send-GoRequest($Agent, $Request,[Threading.CancellationToken]$Cancellat
     }
     if ($Request.Body.stream) {return Send-GoStreamRequest $Agent $Request $CancellationToken $OnEvent}
     if ([string]::IsNullOrWhiteSpace($env:OPENCODE_API_KEY)) { throw 'Set OPENCODE_API_KEY to your OpenCode Go API key.' }
-    for ($attempt=0; $attempt -lt 3; $attempt++) {
+    for ($attempt=0; $attempt -le $Agent.MaxRetries; $attempt++) {
+        $CancellationToken.ThrowIfCancellationRequested()
         try {
             return Invoke-RestMethod -Uri $Request.Uri -Method Post -Headers $Request.Headers -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes(($Request.Body | ConvertTo-Json -Depth 100 -Compress))) -TimeoutSec $Agent.TimeoutSeconds
         } catch {
             $responseProperty = $_.Exception.PSObject.Properties['Response']
             $status = if ($responseProperty -and $responseProperty.Value) { [int]$responseProperty.Value.StatusCode } else { 0 }
-            if ($status -in @(429,500,502,503,504) -and $attempt -lt 2) { Start-Sleep -Seconds ([Math]::Pow(2,$attempt+1)); continue }
+            if ($status -in @(0,408,429,500,502,503,504) -and $attempt -lt $Agent.MaxRetries) { Wait-GoRetry $attempt $Agent.MaxRetries $CancellationToken $OnEvent $status; continue }
             # Never echo request headers or the provider's potentially sensitive response body.
             throw "OpenCode request failed (HTTP $status). Check model, API key, plan quota and network."
         }
@@ -226,6 +304,7 @@ function Invoke-GoAgent {
     $checkpoint=$Agent.History.Count
     try {
         $Agent.History.Add(@{kind='user';text=$Prompt})
+        if ($SessionPath) {Save-GoSession $Agent $SessionPath}
         for ($turn=0; $turn -lt $Agent.MaxTurns; $turn++) {
             $CancellationToken.ThrowIfCancellationRequested()
             Publish-GoEvent $OnEvent @{type='assistant_start';turn=$turn}
@@ -298,4 +377,4 @@ function Import-GoSession {
     $agent
 }
 
-Export-ModuleMember -Function New-GoAgent,Invoke-GoAgent,Save-GoSession,Import-GoSession,Get-GoModelCatalog,Get-GoTools,Invoke-GoTool
+Export-ModuleMember -Function Set-GoModel,Set-GoReasoning,New-GoAgent,Invoke-GoAgent,Save-GoSession,Import-GoSession,Get-GoModelCatalog,Get-GoTools,Invoke-GoTool

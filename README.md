@@ -28,6 +28,46 @@ $env:OPENCODE_API_KEY = 'your-opencode-api-key'
 
 PowerShell 7 を `pwsh` として起動してください。Windows PowerShell 5.1 は対象外です。Windows の実行ポリシーでブロックされる場合は、所属組織の方針に従ってスクリプトの実行を許可してください。
 
+## TUI とセッション（0.5.0）
+
+対話起動は色付きのインライン TUI です。本文は白、reasoning は灰色、ツールは黄色、エラーは赤で区別します。入力欄の近くにモデル、権限、reasoning 設定、セッション名を表示します。
+
+- `Enter` で送信、`Alt+Enter` で改行。左右・Home・End で編集、上下で入力履歴を選択。
+- reasoning はストリーミング中も**末尾3行だけ**を更新表示。`Ctrl+O` で全文を展開／折りたたみ。応答後も切替可能で、再開した履歴にも対応します。
+- `/model` と `/resume` は検索付き選択画面。上下で選び、Enter で決定、Esc で取消。
+- 生成中は `Esc` または `Ctrl+C` で中断。入力中の `Ctrl+C` は入力取消、空の入力で `Ctrl+D` は終了。
+- `-Plain` または入出力のリダイレクト時は行入力になります。選択画面は一覧とコマンド指定で操作します。
+
+```powershell
+./Start-GoAgent.ps1 -Workspace C:\src\project
+# 同じ workspace の最新セッションを再開
+./Start-GoAgent.ps1 -Workspace C:\src\project -Resume
+# 保存先を変更
+./Start-GoAgent.ps1 -SessionDirectory C:\agent-sessions
+```
+
+起動時から `sessions/<会話ID>.session.json` に自動保存します。依頼の受付時、ツール往復の完了時、設定変更時、終了時に保存します。`/new` は別ファイルで新規会話を開始し、以前の会話を残します。
+
+```text
+/resume                      セッションを選択
+/resume 2                    一覧の2番を再開
+/resume C:\agent-sessions\example.session.json
+/save                        現在の保存先へ保存
+/save C:\agent-sessions\copy.session.json
+/model                       モデルを選択
+/model gpt-6-luna            会話を保持してモデル変更
+/reasoning High              Default / Low / Medium / High
+/thinking 2048               Messages モデルの thinking budget
+/thinking 0                  thinking budget の指定を解除
+/retry                       失敗した依頼を手動再送
+/new                         新規会話
+/exit                        保存して終了
+```
+
+モデル変更では本文とツール呼出し・結果を新しい API 方式へ変換します。別モデルで使えない reasoning 署名・暗号化データ・応答 ID は引き継ぎません。reasoning 設定はモデル変更時に既定へ戻します。`/reasoning` は Chat／Responses 用、`/thinking` は Messages 用です。設定値が利用できるかは各モデルの仕様に従います。変更したモデルと reasoning 設定は保存・再開されます。
+
+一時的な接続エラーや HTTP 408／429／500／502／503／504 は既定で最大2回、自動再送します。待ち時間と回数を黄色で表示し、SSE の `Retry-After` も尊重します。`-MaxRetries 0` で無効化できます。認証エラー、キャンセル、ストリーム受信後の途中切断は自動再送しません。実行済みツールは再送処理で実行し直さず、途中切断後は `/retry` で保存済みのツール結果から続けられます。
+
 ## 更新
 
 ```powershell
@@ -38,7 +78,7 @@ PowerShell 7 を `pwsh` として起動してください。Windows PowerShell 5
 
 対話中は `/upgrade` でも更新できます。GitHub の `nakasyou/power-agent` の `main` を取得・解凍し、スクリプト自身のディレクトリへ上書きします。完了後はエージェントを再起動してください。`-Workspace` のプロジェクトを更新先にはしません。
 
-セッション、`.env`、`.git`、独自ファイルは残します。配布スクリプト・README・docs・tests の同名ファイルへの変更は上書きされます。取得と検証が成功してから配置し、配置に失敗した場合は更新済みファイルを復元します。対話中に `-SessionPath` を指定していれば更新前に会話を保存します。Windows では配置したファイルを `Unblock-File` で解除します。実行ポリシーそのものは変更しません。
+セッション、`.env`、`.git`、独自ファイルは残します。配布スクリプト・README・docs・tests の同名ファイルへの変更は上書きされます。取得と検証が成功してから配置し、配置に失敗した場合は更新済みファイルを復元します。対話中は更新前に会話を自動保存します。Windows では配置したファイルを `Unblock-File` で解除します。実行ポリシーそのものは変更しません。
 
 ## ストリーミング表示（0.3.0）
 
@@ -229,9 +269,9 @@ $restored = Import-GoSession -Path ./sessions/work.json
 
 ## 制限と検証
 
-既定では1依頼につき最大30回の API 呼出し、出力上限8192トークン、HTTP タイムアウト120秒です。`-MaxTurns`、`-MaxTokens`、`-TimeoutSeconds` で変更できます。テキスト読取・コマンド出力は2000行／50 KiB、検索と編集差分は50 KiB を目安に制限し、継続案内を付けます。429／500／502／503／504 の応答は2秒・4秒の待機後に最大2回再試行します。トークン上限で途切れた応答は完成した回答として扱いません。
+既定では1依頼につき最大30回の API 呼出し、出力上限8192トークン、HTTP タイムアウト120秒です。`-MaxTurns`、`-MaxTokens`、`-TimeoutSeconds` で変更できます。テキスト読取・コマンド出力は2000行／50 KiB、検索と編集差分は50 KiB を目安に制限し、継続案内を付けます。一時的な接続エラーと HTTP 408／429／500／502／503／504 は2秒・4秒の待機後に最大2回再試行します（`-MaxRetries` で変更）。トークン上限で途切れた応答は完成した回答として扱いません。
 
-LLM 応答は既定でストリーミング受信します。MCP、プラグイン、Pi の全 TUI、履歴の自動圧縮、分岐、バックグラウンド実行は未実装です。長い会話では `/new` で切り替えてください。完了したファイル変更の自動ロールバックは行いません。ツールの対応範囲と Pi との差は [docs/tool-compatibility.md](docs/tool-compatibility.md) にまとめています。
+LLM 応答は既定でストリーミング受信します。MCP、プラグイン、Pi の全ショートカット、履歴の自動圧縮、分岐、バックグラウンド実行は未実装です。長い会話では `/new` で切り替えてください。完了したファイル変更の自動ロールバックは行いません。ツールの対応範囲と Pi との差は [docs/tool-compatibility.md](docs/tool-compatibility.md) にまとめています。
 
 追加のテスト依存なしで実行できます。
 
@@ -241,9 +281,12 @@ pwsh -NoProfile -File ./tests/Tools.Tests.ps1
 pwsh -NoProfile -File ./tests/Http.Tests.ps1
 pwsh -NoProfile -File ./tests/Streaming.Tests.ps1
 pwsh -NoProfile -File ./tests/Upgrade.Tests.ps1
+pwsh -NoProfile -File ./tests/Terminal.Tests.ps1
+pwsh -NoProfile -File ./tests/Console.Tests.ps1
+pwsh -NoProfile -File ./tests/Retry.Tests.ps1
 ```
 
-PowerShell 7.6.3 / Linux で、206件のアサーションと3方式の実 HTTP モック統合シナリオを検証済み。複数編集・失敗時の無変更・補助照合・BOM／改行保持・パッチの適用結果・別プロセス間の変更ロック、検索と除外設定、画像の API 形式変換、出力制限・更新・キャンセルに加え、認証・ツール往復・保存／再開・429再試行を確認しました。SSE の分割 UTF-8／複数行データ、reasoning／本文のリアルタイム通知、分割ツール引数、途中切断・キャンセル・タイムアウト、CLI の重複しない表示も検証しました。OpenCode Go の API キーが提供されていないため実サービス接続は未検証です。Windows / macOS での実行は未検証です。
+PowerShell 7.6.3 / Linux で、260件のアサーションと3方式の実 HTTP モック統合シナリオを検証済み。複数編集・失敗時の無変更・補助照合・BOM／改行保持・パッチの適用結果・別プロセス間の変更ロック、検索と除外設定、画像の API 形式変換、出力制限・更新・キャンセルに加え、認証・ツール往復・保存／再開・429再試行を確認しました。SSE の分割 UTF-8／複数行データ、reasoning／本文のリアルタイム通知、分割ツール引数、途中切断・キャンセル・タイムアウト、CLI の重複しない表示も検証しました。セッション自動保存、対話中のモデル／reasoning 変更、API 方式を跨ぐ履歴変換、再送回数と認証エラー時の停止も検証しました。Linux の擬似端末で Ctrl+O の生成中・入力中の切替、モデルの絞り込み選択、日本語の複数行入力を確認しました。OpenCode Go の API キーが提供されていないため実サービス接続は未検証です。Windows / macOS での実行は未検証です。
 
 ## 参考
 

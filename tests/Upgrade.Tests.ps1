@@ -21,7 +21,7 @@ try {
     Set-Content (Join-Path $install 'README.md') 'old'
     $download={param($Uri,$Path) Copy-Item -LiteralPath $zip -Destination $Path}.GetNewClosure()
     $result=Invoke-GoUpgrade -InstallDirectory $install -Download $download
-    Assert ($result.Version -eq '0.4.0') 'version comes from downloaded manifest'
+    Assert ($result.Version -eq '0.5.0') 'version comes from downloaded manifest'
     Assert (Test-Path (Join-Path $install 'Start-GoAgent.ps1')) 'archive root is flattened'
     Assert (-not (Test-Path (Join-Path $install 'power-agent-main'))) 'no nested installation'
     Assert ((Get-Content (Join-Path $install '.env')) -eq 'secret') 'secrets preserved'

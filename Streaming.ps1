@@ -155,7 +155,7 @@ function Read-GoSseResponse($Stream,[string]$Protocol,[Threading.CancellationTok
     try {
         while (-not $state.done) {
             $CancellationToken.ThrowIfCancellationRequested()
-            $line=$reader.ReadLineAsync().WaitAsync($CancellationToken).GetAwaiter().GetResult()
+            $line=Wait-GoNetworkTask ($reader.ReadLineAsync().WaitAsync($CancellationToken)) $CancellationToken $OnEvent
             if ($null -eq $line) {
                 if ($data.Count -gt 0) {Add-GoStreamEvent $state ($data -join "`n") $OnEvent}
                 break
@@ -182,29 +182,35 @@ function Send-GoStreamRequest($Agent,$Request,[Threading.CancellationToken]$Canc
     $timeout=[Threading.CancellationTokenSource]::CreateLinkedTokenSource($CancellationToken)
     $timeout.CancelAfter([TimeSpan]::FromSeconds($Agent.TimeoutSeconds));$token=$timeout.Token
     try {
-        for ($attempt=0;$attempt -lt 3;$attempt++) {
+        for ($attempt=0;$attempt -le $Agent.MaxRetries;$attempt++) {
             $message=[Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Post,$Request.Uri)
             $response=$null;$stream=$null
             try {
                 foreach ($key in $Request.Headers.Keys) {$null=$message.Headers.TryAddWithoutValidation($key,[string]$Request.Headers[$key])}
                 $null=$message.Headers.TryAddWithoutValidation('Accept','text/event-stream')
                 $message.Content=[Net.Http.StringContent]::new(($Request.Body | ConvertTo-Json -Depth 100 -Compress),[Text.Encoding]::UTF8,'application/json')
-                try {$response=$client.SendAsync($message,[Net.Http.HttpCompletionOption]::ResponseHeadersRead,$token).GetAwaiter().GetResult()}
+                try {$response=Wait-GoNetworkTask ($client.SendAsync($message,[Net.Http.HttpCompletionOption]::ResponseHeadersRead,$token)) $token $OnEvent}
                 catch {
                     if ($token.IsCancellationRequested) {throw}
+                    if ($attempt -lt $Agent.MaxRetries) {Wait-GoRetry $attempt $Agent.MaxRetries $token $OnEvent;continue}
                     throw 'OpenCode streaming connection failed. Check network and endpoint.'
                 }
                 $status=[int]$response.StatusCode
                 if (-not $response.IsSuccessStatusCode) {
-                    if ($status -in @(429,500,502,503,504) -and $attempt -lt 2) {
-                        $null=[Threading.Tasks.Task]::Delay([TimeSpan]::FromSeconds([Math]::Pow(2,$attempt+1)),$token).GetAwaiter().GetResult()
+                    if ($status -in @(408,429,500,502,503,504) -and $attempt -lt $Agent.MaxRetries) {
+                        $delay=0
+                        if ($response.Headers.RetryAfter) {
+                            if ($response.Headers.RetryAfter.Delta) {$delay=$response.Headers.RetryAfter.Delta.TotalSeconds}
+                            elseif ($response.Headers.RetryAfter.Date) {$delay=($response.Headers.RetryAfter.Date-[DateTimeOffset]::UtcNow).TotalSeconds}
+                        }
+                        Wait-GoRetry $attempt $Agent.MaxRetries $token $OnEvent $status $delay
                         continue
                     }
                     throw "OpenCode request failed (HTTP $status). Check model, API key, plan quota and network."
                 }
                 if ($response.Content.Headers.ContentType -and $response.Content.Headers.ContentType.MediaType -eq 'application/json') {
                     # Compatible servers may ignore stream=true. Emit the complete text once.
-                    $json=$response.Content.ReadAsStringAsync($token).GetAwaiter().GetResult()
+                    $json=Wait-GoNetworkTask ($response.Content.ReadAsStringAsync($token)) $token $OnEvent
                     $result=ConvertFrom-Json -InputObject $json -AsHashtable
                     Publish-GoBufferedResponse $Agent $result $OnEvent
                     return $result
