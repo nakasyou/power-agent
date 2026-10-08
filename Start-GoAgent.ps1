@@ -36,7 +36,7 @@ if ($Upgrade) { & (Join-Path $PSScriptRoot 'Upgrade.ps1'); return }
 Import-Module (Join-Path $PSScriptRoot 'PSGoAgent.psd1') -Force
 . (Join-Path $PSScriptRoot 'Console.ps1')
 $consoleState=@{}
-$renderer=New-GoConsoleRenderer -HideReasoning:$HideReasoning -CompactReasoning -Plain:$Plain -State $consoleState
+$renderer=New-GoConsoleRenderer -HideReasoning:$HideReasoning -CompactReasoning -CompactTools -Plain:$Plain -State $consoleState
 if ($ListModels) { Get-GoModelCatalog; return }
 if ($Login) {Connect-GoCodex -GlobalConfigDirectory $GlobalConfigDirectory;return}
 if ($Logout) {Disconnect-GoCodex -GlobalConfigDirectory $GlobalConfigDirectory;return}
@@ -67,7 +67,7 @@ $failedPrompt=$null
 if ($Resume) {Show-GoSessionTranscript $agent -Renderer $renderer -ConsoleState $consoleState}
 while ($true) {
     Show-GoTerminalStatus $agent $SessionPath
-    $line=Read-GoTerminalInput -History $inputHistory -Plain:$Plain -OnToggleReasoning {Switch-GoReasoningView $consoleState;Show-GoTerminalStatus $agent $SessionPath}
+    $line=Read-GoTerminalInput -History $inputHistory -Plain:$Plain -OnToggleReasoning {Switch-GoReasoningView $consoleState;Show-GoTerminalStatus $agent $SessionPath} -OnToggleTools {Switch-GoToolView $consoleState;Show-GoTerminalStatus $agent $SessionPath}
     if ($null -eq $line -or $line -eq '/exit') { break }
     if ([string]::IsNullOrWhiteSpace($line)) { continue }
     if ($line -eq '/help') {

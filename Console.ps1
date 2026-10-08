@@ -1,5 +1,5 @@
 function New-GoConsoleRenderer {
-    param([switch]$HideReasoning,[switch]$CompactReasoning,[switch]$Plain,[hashtable]$State)
+    param([switch]$HideReasoning,[switch]$CompactReasoning,[switch]$CompactTools,[switch]$Plain,[hashtable]$State)
     if (-not $State) {$State=@{}}
     $state=$State
     # GetNewClosure creates a dynamic module. Bind helpers as values so callbacks
@@ -8,16 +8,21 @@ function New-GoConsoleRenderer {
     $state.summary=${function:Write-GoReasoningSummary}
     $state.live=${function:Write-GoReasoningLive}
     $state.toggle=${function:Switch-GoReasoningView}
+    $state.repaint=${function:Update-GoConsoleTranscript}
+    $state.toolSummary=${function:Write-GoToolSummary};$state.toolLive=${function:Write-GoToolLive};$state.toolToggle=${function:Switch-GoToolView}
+    $state.toolPanels=@{};$state.toolsExpanded=$false
     $state.section=$null;$state.tools=@{};$state.events=[Collections.Generic.List[object]]::new()
     $state.expanded=$false;$state.replaying=$false;$state.reasoning='';$state.reasonTop=0;$state.reasonRows=0
-    $state.native=[bool]($CompactReasoning -and -not $Plain -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected)
+    $state.native=[bool](($CompactReasoning -or $CompactTools) -and -not $Plain -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected)
     $compact=[bool]$CompactReasoning
+    $compactTools=[bool]$CompactTools
     $hide=[bool]$HideReasoning
     $callback={
         param($event)
         if ($state.native -and -not $state.replaying -and [Console]::KeyAvailable) {
             $key=[Console]::ReadKey($true)
             if (($key.Key -eq 'Escape' -or ($key.Key -eq 'C' -and ($key.Modifiers -band [ConsoleModifiers]::Control))) -and $state.ContainsKey('cancellation') -and $state.cancellation) {$state.cancellation.Cancel()}
+            if ($key.Key -eq 'T' -and ($key.Modifiers -band [ConsoleModifiers]::Control)) {& $state.toolToggle $state}
             if ($key.Key -eq 'O' -and ($key.Modifiers -band [ConsoleModifiers]::Control)) {& $state.toggle $state}
         }
         if ($event.type -eq 'ui_tick') {return}
@@ -59,13 +64,39 @@ function New-GoConsoleRenderer {
             'tool_start' {
                 if ($state.section) {Write-Host ''; $state.section=$null}
                 $state.tools[$event.callId]=$false
+                if ($compactTools) {
+                    $panel=@{Name=$event.name;Text='';Top=0;Rows=0;Complete=$false;IsError=$false;Details=@{}}
+                    $state.toolPanels[$event.callId]=$panel
+                    if ($state.native -and -not $state.replaying) {$panel.Top=[Console]::CursorTop;$panel.Rows=1;Write-Host "[tool: $($event.name)] · Ctrl+T expand/collapse" -ForegroundColor Yellow}
+                    return
+                }
                 Write-Host "[tool: $($event.name)]" -ForegroundColor Yellow
             }
             'tool_output_delta' {
                 $state.tools[$event.callId]=$true
+                if ($compactTools) {
+                    $panel=$state.toolPanels[$event.callId];$panel.Text+=$event.delta
+                    if ($state.native -and -not $state.replaying) {
+                        if ($state.toolsExpanded) {Write-Host $event.delta -NoNewline}
+                        else {& $state.toolLive $state $panel}
+                    }
+                    return
+                }
                 Write-Host $event.delta -NoNewline
             }
             'tool_end' {
+                if ($compactTools) {
+                    $panel=$state.toolPanels[$event.callId];$panel.Complete=$true;$panel.IsError=$event.isError;$panel.Details=$event.details
+                    # Preserve streamed output for expansion; canonical output includes truncation/status.
+                    if (-not $panel.Text) {$panel.Text=$event.text}
+                    if ($state.native -and -not $state.replaying -and -not $state.toolsExpanded) {& $state.toolLive $state $panel}
+                    elseif (-not $state.native -or $state.replaying) {& $state.toolSummary $state $panel}
+                    else {Write-Host ''}
+                    if ($event.isError) {Write-Host '[tool failed or interrupted]' -ForegroundColor Red}
+                    foreach ($key in @('exitCode','fullOutputPath','status')) {if ($event.details -and $event.details.ContainsKey($key)) {Write-Host "$($key): $($event.details[$key])" -ForegroundColor Gray}}
+                    $state.tools.Remove($event.callId)
+                    return
+                }
                 if ($state.tools.ContainsKey($event.callId) -and $state.tools[$event.callId]) {
                     Write-Host ''
                     if ($event.details -and $event.details.ContainsKey('exitCode')) {Write-Host "exit_code: $($event.details.exitCode)"}
@@ -130,11 +161,19 @@ function Switch-GoReasoningView {
     param([hashtable]$State)
     if (-not $State.native -or $State.replaying) {return}
     $State.expanded=-not $State.expanded
+    & $State.repaint $State
+}
+function Update-GoConsoleTranscript {
+    param([hashtable]$State)
     [Console]::Clear()
-    $State.section=$null;$State.tools=@{};$State.reasoning='';$State.replaying=$true
+    $State.section=$null;$State.tools=@{};$State.toolPanels=@{};$State.reasoning='';$State.replaying=$true
     try {
         foreach ($event in $State.events) {$null=& $State.callback $event}
         if ($State.section -eq 'reasoning') {& $State.summary $State}
+        foreach ($panel in $State.toolPanels.Values) {if (-not $panel.Complete) {
+            & $State.toolSummary $State $panel
+            $panel.Top=[Math]::Max(0,[Console]::CursorTop-4);$panel.Rows=4
+        }}
     } finally {$State.replaying=$false}
     # A running reasoning section continues below the repainted transcript.
     if ($State.section -eq 'reasoning') {
@@ -166,10 +205,10 @@ function Show-GoTerminalStatus {
     Write-Host "$($Agent.Model) · $($Agent.Permission) · reasoning $($Agent.ReasoningEffort) / budget $($Agent.ThinkingBudget) · $($Agent.History.Count) messages" -ForegroundColor Gray
     Write-Host " $($Agent.Workspace)" -ForegroundColor DarkGray
     Write-Host " session: $([IO.Path]::GetFileName($SessionPath))" -ForegroundColor DarkGray
-    Write-Host ' Enter send · Alt+Enter newline · ↑↓ history · Ctrl+O reasoning · Ctrl+C clear · Ctrl+D exit · /help' -ForegroundColor DarkGray
+    Write-Host ' Enter send · Alt+Enter newline · ↑↓ history · Ctrl+O reasoning · Ctrl+T tools · Ctrl+C clear · Ctrl+D exit · /help' -ForegroundColor DarkGray
 }
 function Read-GoTerminalInput {
-    param([Collections.Generic.List[string]]$History,[switch]$Plain,[scriptblock]$OnToggleReasoning)
+    param([Collections.Generic.List[string]]$History,[switch]$Plain,[scriptblock]$OnToggleReasoning,[scriptblock]$OnToggleTools)
     if ($Plain -or [Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {return Read-Host 'you'}
     $text='';$cursor=0;$index=$History.Count;$draft='';$rows=1
     $origin=[Console]::CursorTop
@@ -203,6 +242,11 @@ function Read-GoTerminalInput {
             [Console]::SetCursorPosition($targetColumn,[Math]::Min([Console]::BufferHeight-1,$origin+$targetLine))
             if ($null -ne $pendingKey) {$key=$pendingKey;$pendingKey=$null} else {$key=[Console]::ReadKey($true)}
             if ($key.Modifiers -band [ConsoleModifiers]::Control) {
+                if ($key.Key -eq 'T' -and $OnToggleTools) {
+                    & $OnToggleTools
+                    $origin=[Console]::CursorTop;$rows=1
+                    continue
+                }
                 if ($key.Key -eq 'O' -and $OnToggleReasoning) {
                     & $OnToggleReasoning
                     $origin=[Console]::CursorTop;$rows=1
@@ -315,4 +359,33 @@ function Select-GoTerminalItem {
             }
         }
     } finally {[Console]::TreatControlCAsInput=$oldControl;Write-Host ''}
+}
+
+function Switch-GoToolView {
+    param([hashtable]$State)
+    if (-not $State.native -or $State.replaying) {return}
+    $State.toolsExpanded=-not $State.toolsExpanded
+    & $State.repaint $State
+}
+function Write-GoToolSummary {
+    param([hashtable]$State,[hashtable]$Panel)
+    Write-Host "[tool: $($Panel.Name)] · Ctrl+T expand/collapse" -ForegroundColor Yellow
+    if ($State.toolsExpanded) {Write-Host $Panel.Text -ForegroundColor Gray}
+    else {foreach ($line in (& $State.tail $Panel.Text)) {Write-Host $line -ForegroundColor $(if ($Panel.IsError) {'Red'} else {'Gray'})}}
+}
+function Write-GoToolLive {
+    param([hashtable]$State,[hashtable]$Panel)
+    $width=[Math]::Max(10,[Console]::WindowWidth)
+    $overflow=$Panel.Top+5-[Console]::BufferHeight
+    if ($overflow -gt 0) {
+        [Console]::SetCursorPosition(0,[Console]::BufferHeight-1)
+        for ($i=0;$i -lt $overflow;$i++) {Write-Host ''}
+        $Panel.Top=[Math]::Max(0,$Panel.Top-$overflow)
+    }
+    [Console]::SetCursorPosition(0,$Panel.Top)
+    for ($i=0;$i -lt $Panel.Rows;$i++) {Write-Host (' '*($width-1))}
+    [Console]::SetCursorPosition(0,$Panel.Top)
+    Write-Host "[tool: $($Panel.Name)] · Ctrl+T expand/collapse" -ForegroundColor Yellow
+    foreach ($line in (& $State.tail $Panel.Text $width)) {Write-Host $line -ForegroundColor $(if ($Panel.IsError) {'Red'} else {'Gray'})}
+    $Panel.Rows=1+@(& $State.tail $Panel.Text $width).Count
 }
