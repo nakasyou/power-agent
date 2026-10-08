@@ -276,3 +276,12 @@ MCP supports stdio and Streamable HTTP (JSON or SSE replies), initialization/ses
 ```
 
 Only configure trusted servers: stdio commands launch when connecting. Tools are exposed as `mcp_SERVER_TOOL`; Ask mode confirms calls, and ReadOnly disables external tools. Explicit `env` and `headers` values may reference `${VARIABLE}`. MCP OAuth, resource browsing, prompts, sampling, and legacy HTTP+SSE transport are not implemented. Module users call `Connect-GoMcp` and `Disconnect-GoMcp` explicitly.
+
+## Web search
+
+```powershell
+./Start-GoAgent.ps1 -Provider OpenAI -Model gpt-4.1 -EnableWebSearch
+./Start-GoAgent.ps1 -Provider OpenAI -Model custom-chat -EnableWebSearch -WebSearchModel search-model -BaseUri https://provider.example/v1
+```
+
+The `web_search` function tool delegates to the same provider's Responses endpoint with the native `web_search` tool. It streams the summary and returns source titles/URLs as text and structured data without modifying conversation history. The provider and search model must support Responses native web search; generic Chat-only endpoints cannot supply this capability. Search settings persist in sessions.
