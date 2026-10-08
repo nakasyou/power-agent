@@ -69,6 +69,13 @@ function Set-GoModel {
     # Model-specific reasoning settings must be chosen explicitly for the new model.
     $Agent.ReasoningEffort='Default';$Agent.ThinkingBudget=0
 }
+function Set-GoPermission {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Agent,
+        [Parameter(Mandatory)][ValidateSet('Ask','ReadOnly','Auto')][string]$Permission)
+    if ($Agent.Busy) {throw 'Cannot change permissions during an active turn.'}
+    $Agent.Permission=@{ask='Ask';readonly='ReadOnly';auto='Auto'}[$Permission.ToLowerInvariant()]
+}
 function Set-GoReasoning {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Agent,
@@ -753,4 +760,4 @@ function Import-GoSession {
     $agent
 }
 
-Export-ModuleMember -Function Get-GoVersion,Connect-GoMcp,Disconnect-GoMcp,Connect-GoCodex,Disconnect-GoCodex,Set-GoModel,Set-GoReasoning,New-GoAgent,Invoke-GoAgent,Save-GoSession,Import-GoSession,Get-GoModelCatalog,Get-GoTools,Invoke-GoTool
+Export-ModuleMember -Function Get-GoVersion,Connect-GoMcp,Disconnect-GoMcp,Connect-GoCodex,Disconnect-GoCodex,Set-GoPermission,Set-GoModel,Set-GoReasoning,New-GoAgent,Invoke-GoAgent,Save-GoSession,Import-GoSession,Get-GoModelCatalog,Get-GoTools,Invoke-GoTool

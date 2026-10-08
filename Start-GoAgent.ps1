@@ -81,7 +81,7 @@ while ($true) {
     if ($null -eq $line -or $line -eq '/exit') { break }
     if ([string]::IsNullOrWhiteSpace($line)) { continue }
     if ($line -eq '/help') {
-        Write-Host '/exit quit · /new conversation · /save [PATH] · /resume [NUMBER|PATH] · /retry resend · /model [NAME] · /reasoning [Default|Low|Medium|High] · /thinking [BUDGET] · /upgrade update' -ForegroundColor Cyan; continue
+        Write-Host '/exit quit · /new conversation · /save [PATH] · /resume [NUMBER|PATH] · /retry resend · /model [NAME] · /permission [Ask|ReadOnly|Auto] · /reasoning [Default|Low|Medium|High] · /thinking [BUDGET] · /upgrade update' -ForegroundColor Cyan; continue
     }
     if ($line -eq '/upgrade') {
         try {
@@ -90,6 +90,24 @@ while ($true) {
             Invoke-GoReleaseUpgrade -TargetPath $target
             break
         } catch { Write-Host $_.Exception.Message -ForegroundColor Red }
+        continue
+    }
+    if ($line -eq '/permission' -or $line.StartsWith('/permission ')) {
+        try {
+            $choice=$line.Substring(11).Trim()
+            if (-not $choice) {
+                $modes=@('Ask','ReadOnly','Auto')
+                $labels=@('Ask · approve command execution, writes and MCP tools','ReadOnly · read and search; no commands, writes or MCP tools','Auto · execute tools without approval')
+                $picked=Select-GoTerminalItem -Title 'Permission' -Labels $labels -Plain:$Plain
+                if ($picked -lt 0) {
+                    if ($Plain -or [Console]::IsInputRedirected) {Write-Host "Permission: $($agent.Permission). Usage: /permission Ask|ReadOnly|Auto" -ForegroundColor Cyan}
+                    continue
+                }
+                $choice=$modes[$picked]
+            }
+            Set-GoPermission $agent $choice
+            Write-Host "Permission: $($agent.Permission)" -ForegroundColor Cyan
+        } catch {Write-Host $_.Exception.Message -ForegroundColor Red}
         continue
     }
     if ($line -eq '/model' -or $line.StartsWith('/model ')) {
