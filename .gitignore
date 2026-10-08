@@ -1,0 +1,5 @@
+sessions/
+*.session.json
+.env
+.env.*
+*.tmp
