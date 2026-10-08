@@ -224,7 +224,7 @@ pwsh -NoProfile -File ./tests/Console.Tests.ps1
 pwsh -NoProfile -File ./tests/Retry.Tests.ps1
 ```
 
-Validated on PowerShell 7.6.3/Linux with the complete test suite and protocol HTTP integration scenarios, including provider/auth, instructions/skills, MCP, search, release upgrades and isolated single-file execution. Coverage includes tools, edits/patches, locking, images, UTF-8 boundaries, SSE, retries, session persistence, protocol/model changes, and renderer callback scope. Native terminal checks covered reasoning expansion, model selection, and multiline input. Live OpenCode Go, Windows, and macOS execution remain unverified.
+Validated on PowerShell 7.6.3/Linux with the complete test suite and protocol HTTP integration scenarios, including provider/auth, instructions/skills, MCP, search, release upgrades and isolated single-file execution. Coverage includes tools, edits/patches, locking, images, UTF-8 boundaries, SSE, retries, session persistence, protocol/model changes, and renderer callback scope. Native terminal checks covered reasoning expansion, model selection, and multiline input. Headless CI also passes on Windows. Native Windows/macOS terminals and live OpenCode Go connections remain unverified.
 
 ## References
 

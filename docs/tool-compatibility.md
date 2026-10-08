@@ -29,4 +29,4 @@ Text read/edit loads files into memory; grep loads candidate lines into memory. 
 
 Chat/Messages/Responses reasoning and text SSE, tool output streaming, inline TUI, sessions, and model/reasoning selection are supported. Live steering, context compaction, branching, and the Pi tool extension API remains unsupported. MCP tools are supported independently.
 
-Validation uses PowerShell 7.6.3/Linux with local tests and mock HTTP. Windows/macOS and live OpenCode Go/image-model connections remain unverified.
+Validation uses PowerShell 7.6.3/Linux with local tests and mock HTTP. Headless CI also passes on Windows. Native Windows/macOS terminals and live OpenCode Go/image-model connections remain unverified.
