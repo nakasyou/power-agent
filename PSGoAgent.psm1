@@ -242,6 +242,149 @@ function Disconnect-GoCodex {
     Remove-Item -LiteralPath (Join-Path $GlobalConfigDirectory 'codex-auth.json') -Force -ErrorAction SilentlyContinue
 }
 
+function Send-GoMcpMessage {
+    param($Connection,[hashtable]$Message,[Threading.CancellationToken]$CancellationToken,[scriptblock]$OnUpdate,[string]$ToolName)
+    $json=$Message | ConvertTo-Json -Depth 100 -Compress
+    $expects=$Message.ContainsKey('id');$request=$null;$response=$null;$reader=$null
+    $timeout=[Threading.CancellationTokenSource]::CreateLinkedTokenSource($CancellationToken);$timeout.CancelAfter([TimeSpan]::FromSeconds($Connection.TimeoutSeconds));$token=$timeout.Token
+    try {
+        if ($Connection.Type -eq 'stdio') {
+            if ($Connection.Process.HasExited) {throw 'MCP server exited.'}
+            $Connection.Process.StandardInput.WriteLine($json);$Connection.Process.StandardInput.Flush()
+            if (-not $expects) {return}
+            $reader=$Connection.Reader
+        } else {
+            $request=[Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Post,$Connection.Url)
+            $request.Content=[Net.Http.StringContent]::new($json,[Text.Encoding]::UTF8,'application/json')
+            $null=$request.Headers.TryAddWithoutValidation('Accept','application/json, text/event-stream')
+            foreach ($key in $Connection.Headers.Keys) {$null=$request.Headers.TryAddWithoutValidation($key,[string]$Connection.Headers[$key])}
+            if ($Connection.SessionId) {$null=$request.Headers.TryAddWithoutValidation('Mcp-Session-Id',$Connection.SessionId)}
+            if ($Message.method -ne 'initialize') {$null=$request.Headers.TryAddWithoutValidation('MCP-Protocol-Version',$Connection.ProtocolVersion)}
+            $response=$Connection.Client.SendAsync($request,[Net.Http.HttpCompletionOption]::ResponseHeadersRead,$token).GetAwaiter().GetResult()
+            if (-not $response.IsSuccessStatusCode) {throw "MCP HTTP request failed ($([int]$response.StatusCode))."}
+            if ($response.Headers.Contains('Mcp-Session-Id')) {$Connection.SessionId=@($response.Headers.GetValues('Mcp-Session-Id'))[0]}
+            if (-not $expects) {return}
+            if ($response.Content.Headers.ContentType.MediaType -eq 'application/json') {
+                $reply=$response.Content.ReadAsStringAsync($token).GetAwaiter().GetResult() | ConvertFrom-Json -AsHashtable
+                if ($reply.ContainsKey('error')) {throw "MCP RPC error ($($reply.error.code)): $($reply.error.message)"}
+                if (-not $reply.ContainsKey('id') -or $reply.id -ne $Message.id) {throw 'MCP response ID mismatch.'}
+                return $reply.result
+            }
+            if ($response.Content.Headers.ContentType.MediaType -ne 'text/event-stream') {throw 'Unsupported MCP HTTP response type.'}
+            $stream=$response.Content.ReadAsStreamAsync($token).GetAwaiter().GetResult();$reader=[IO.StreamReader]::new($stream,[Text.Encoding]::UTF8)
+        }
+        $data=[Collections.Generic.List[string]]::new()
+        while ($true) {
+            $line=Wait-GoNetworkTask ($reader.ReadLineAsync().WaitAsync($token)) $token $null
+            if ($null -eq $line) {throw 'MCP connection closed before a response.'}
+            if ($line.Length -gt 16MB) {throw 'MCP message is too large.'}
+            if ($Connection.Type -eq 'http') {
+                if ($line.StartsWith('data:')) {$data.Add($line.Substring(5).TrimStart());continue}
+                if ($line -ne '' -or -not $data.Count) {continue}
+                $line=$data -join "`n";$data.Clear()
+            }
+            if (-not $line.Trim()) {continue}
+            $reply=$line | ConvertFrom-Json -AsHashtable
+            if ($reply.ContainsKey('method')) {
+                if ($reply.method -eq 'notifications/progress' -and $OnUpdate) {$null=& $OnUpdate @{name=$ToolName;text="$($reply.params.message)`n"}}
+                if ($reply.ContainsKey('id') -and $Connection.Type -eq 'stdio') {
+                    $answer=if ($reply.method -eq 'ping') {@{jsonrpc='2.0';id=$reply.id;result=@{}}} else {@{jsonrpc='2.0';id=$reply.id;error=@{code=-32601;message='Client method not supported'}}}
+                    $Connection.Process.StandardInput.WriteLine(($answer | ConvertTo-Json -Compress));$Connection.Process.StandardInput.Flush()
+                }
+                continue
+            }
+            if (-not $reply.ContainsKey('id') -or $reply.id -ne $Message.id) {continue}
+            if ($reply.ContainsKey('error')) {throw "MCP RPC error ($($reply.error.code)): $($reply.error.message)"}
+            return $reply.result
+        }
+    } catch {
+        if ($Connection.Type -eq 'stdio' -and -not $Connection.Process.HasExited) {$Connection.Process.Kill($true)}
+        throw
+    } finally {
+        if ($Connection.Type -eq 'http' -and $reader) {$reader.Dispose()}
+        if ($response) {$response.Dispose()};if ($request) {$request.Dispose()};$timeout.Dispose()
+    }
+}
+function Invoke-GoMcpRequest {
+    param($Connection,[string]$Method,[hashtable]$Params=@{},[Threading.CancellationToken]$CancellationToken=[Threading.CancellationToken]::None,[scriptblock]$OnUpdate,[string]$ToolName)
+    $Connection.NextId++
+    Send-GoMcpMessage $Connection @{jsonrpc='2.0';id=$Connection.NextId;method=$Method;params=$Params} $CancellationToken $OnUpdate $ToolName
+}
+function Connect-GoMcp {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Agent,[string[]]$ConfigPath=@((Join-Path $Agent.GlobalConfigDirectory 'mcp.json'),(Join-Path $Agent.Workspace '.power-agent/mcp.json')))
+    $servers=@{}
+    foreach ($path in $ConfigPath) {
+        if (-not (Test-Path -LiteralPath $path)) {continue}
+        $config=Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable
+        foreach ($name in $config.mcpServers.Keys) {$servers[$name]=$config.mcpServers[$name]}
+    }
+    try {
+        foreach ($name in $servers.Keys) {
+            $server=$servers[$name]
+            if ($server.ContainsKey('disabled') -and $server.disabled) {continue}
+            $connection=@{Name=$name;NextId=0;TimeoutSeconds=60;SessionId='';ProtocolVersion='2025-03-26'}
+            if ($server.ContainsKey('url')) {
+                $uri=[uri]$server.url
+                if ($uri.Scheme -ne 'https' -and -not ($uri.Scheme -eq 'http' -and $uri.IsLoopback)) {throw 'MCP URL must be HTTPS or loopback HTTP.'}
+                $connection.Type='http';$connection.Url=$server.url;$connection.Headers=@{};$connection.Client=[Net.Http.HttpClient]::new()
+                if ($server.ContainsKey('headers')) {foreach ($key in $server.headers.Keys) {$connection.Headers[$key]=Expand-GoMcpEnvironment $server.headers[$key]}}
+            } else {
+                $connection.Type='stdio'
+                $start=[Diagnostics.ProcessStartInfo]::new($server.command);$start.UseShellExecute=$false;$start.RedirectStandardInput=$true;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
+                $start.StandardInputEncoding=[Text.UTF8Encoding]::new($false);$start.StandardOutputEncoding=[Text.Encoding]::UTF8;$start.WorkingDirectory=$Agent.Workspace
+                foreach ($key in @('OPENCODE_API_KEY','OPENAI_API_KEY')) {$null=$start.Environment.Remove($key)}
+                if ($server.ContainsKey('args')) {foreach ($argument in $server.args) {$start.ArgumentList.Add([string]$argument)}}
+                if ($server.ContainsKey('env')) {foreach ($key in $server.env.Keys) {$start.Environment[$key]=Expand-GoMcpEnvironment $server.env[$key]}}
+                $process=[Diagnostics.Process]::new();$process.StartInfo=$start;$null=$process.Start()
+                $connection.Process=$process;$connection.Reader=$process.StandardOutput;$connection.ErrorTask=$process.StandardError.ReadToEndAsync()
+            }
+            $Agent.McpConnections.Add($connection)
+            $init=Invoke-GoMcpRequest $connection initialize @{protocolVersion='2025-03-26';capabilities=@{};clientInfo=@{name='power-agent';version='0.6.0'}}
+            $connection.ProtocolVersion=$init.protocolVersion
+            $null=Send-GoMcpMessage $connection @{jsonrpc='2.0';method='notifications/initialized';params=@{}} ([Threading.CancellationToken]::None) $null ''
+            $params=@{};$cursors=[Collections.Generic.HashSet[string]]::new()
+            do {
+                $catalog=Invoke-GoMcpRequest $connection 'tools/list' $params
+                foreach ($tool in $catalog.tools) {
+                    $publicName=('mcp_'+$name+'_'+$tool.name) -replace '[^a-zA-Z0-9_-]','_'
+                    if ($publicName.Length -gt 64 -or $Agent.McpTools.ContainsKey($publicName)) {throw 'MCP tool name collision or length limit.'}
+                    $Agent.McpTools[$publicName]=@{name=$publicName;description=$(if ($tool.ContainsKey('description')) {$tool.description} else {'MCP tool'});parameters=$tool.inputSchema;Connection=$connection;RemoteName=$tool.name}
+                }
+                $cursor=if ($catalog.ContainsKey('nextCursor')) {$catalog.nextCursor} else {$null}
+                if ($cursor) {if (-not $cursors.Add($cursor)) {throw 'MCP pagination cursor repeated.'};$params=@{cursor=$cursor}}
+            } while ($cursor)
+        }
+    } catch {Disconnect-GoMcp $Agent;throw}
+}
+function Expand-GoMcpEnvironment {
+    param([string]$Value)
+    [regex]::Replace($Value,'\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}',{param($Match) $value=[Environment]::GetEnvironmentVariable($Match.Groups[1].Value);if ($null -eq $value) {throw "Missing MCP environment variable: $($Match.Groups[1].Value)"};$value})
+}
+function Disconnect-GoMcp {
+    param($Agent)
+    foreach ($connection in $Agent.McpConnections) {
+        if ($connection.Type -eq 'stdio') {if (-not $connection.Process.HasExited) {$connection.Process.Kill($true);$connection.Process.WaitForExit()};$connection.Process.Dispose()}
+        else {$connection.Client.Dispose()}
+    }
+    $Agent.McpConnections.Clear();$Agent.McpTools.Clear()
+}
+function Invoke-GoMcpTool {
+    param($Agent,[string]$Name,$Arguments,[Threading.CancellationToken]$CancellationToken,[scriptblock]$OnUpdate)
+    if ($Agent.Permission -eq 'ReadOnly') {throw 'MCP tools are disabled in ReadOnly mode.'}
+    if ($Agent.Permission -eq 'Ask') {
+        $allowed=if ($Agent.Approve) {& $Agent.Approve $Name $Arguments} else {Write-Host "$Name`n$($Arguments | ConvertTo-Json -Depth 20)";(Read-Host 'Allow MCP tool? [y/N]') -ceq 'y'}
+        if ($allowed -ne $true) {throw 'MCP action denied.'}
+    }
+    $tool=$Agent.McpTools[$Name]
+    $reply=Invoke-GoMcpRequest $tool.Connection 'tools/call' @{name=$tool.RemoteName;arguments=$Arguments;_meta=@{progressToken=[guid]::NewGuid().ToString()}} $CancellationToken $OnUpdate $Name
+    $text=(@($reply.content | ForEach-Object {if ($_.type -eq 'text') {$_.text} elseif ($_.type -ne 'image') {$_ | ConvertTo-Json -Depth 20 -Compress}})) -join "`n"
+    $structured=if ($reply.ContainsKey('structuredContent')) {$reply.structuredContent} else {$null}
+    if (-not $text -and $structured) {$text=$structured | ConvertTo-Json -Depth 100}
+    $truncation=Get-GoTruncation $text
+    New-GoToolResult $truncation.content ([bool]($reply.ContainsKey('isError') -and $reply.isError)) @{server=$tool.Connection.Name;truncated=$truncation.truncated} @($reply.content | Where-Object type -EQ 'image') $structured
+}
+
 function New-GoAgent {
     [CmdletBinding()]
     param(
@@ -288,6 +431,7 @@ $Instructions
     $context=Get-GoInstructionContext $root $GlobalConfigDirectory
     $system+="`n"+$context.Text
     [pscustomobject]@{
+        McpTools=@{};McpConnections=[Collections.Generic.List[object]]::new()
         Provider=$Provider; ApiKey=$ApiKey
         Skills=$context.Skills; GlobalConfigDirectory=$GlobalConfigDirectory
         PSTypeName='PSGoAgent'; Version=1; Id=[guid]::NewGuid().ToString()
@@ -549,4 +693,4 @@ function Import-GoSession {
     $agent
 }
 
-Export-ModuleMember -Function Connect-GoCodex,Disconnect-GoCodex,Set-GoModel,Set-GoReasoning,New-GoAgent,Invoke-GoAgent,Save-GoSession,Import-GoSession,Get-GoModelCatalog,Get-GoTools,Invoke-GoTool
+Export-ModuleMember -Function Connect-GoMcp,Disconnect-GoMcp,Connect-GoCodex,Disconnect-GoCodex,Set-GoModel,Set-GoReasoning,New-GoAgent,Invoke-GoAgent,Save-GoSession,Import-GoSession,Get-GoModelCatalog,Get-GoTools,Invoke-GoTool

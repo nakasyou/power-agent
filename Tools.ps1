@@ -16,6 +16,7 @@ function Get-GoTools {
         if ($Agent -and $Agent.Permission -eq 'ReadOnly' -and $spec.name -in @('write','edit','powershell')) { continue }
         @{name=$spec.name;description=$spec.description;parameters=@{type='object';properties=$spec.properties;required=$spec.required;additionalProperties=$false}}
     }
+    if ($Agent -and $Agent.Permission -ne 'ReadOnly') {foreach ($tool in $Agent.McpTools.Values) {@{name=$tool.name;description=$tool.description;parameters=$tool.parameters}}}
 }
 
 function Assert-GoSchema($Value,$Schema,[string]$Location='arguments') {
@@ -540,6 +541,7 @@ function Invoke-GoTool {
         $spec=@(Get-GoTools $Agent | Where-Object name -EQ $Name)
         if (-not $spec.Count -and $Agent.Permission -eq 'ReadOnly' -and $Name -in @('write','edit','powershell')) {throw 'Action denied by ReadOnly permission.'}
         if ($spec.Count -ne 1) {throw "Unknown tool: $Name"}
+        if ($Agent.McpTools.ContainsKey($Name)) {return Invoke-GoMcpTool $Agent $Name $argumentsNormalized $CancellationToken $OnUpdate}
         Assert-GoSchema $argumentsNormalized $spec[0].parameters
         if ($Name -eq 'skill') {if (-not $Agent.Skills.ContainsKey($argumentsNormalized.name)) {throw 'Unknown skill.'};return New-GoToolResult $Agent.Skills[$argumentsNormalized.name].Content}
         $path=if ($Name -ne 'powershell') {Resolve-GoPath $Agent $(if ($argumentsNormalized.ContainsKey('path')) {$argumentsNormalized.path} else {'.'})} else {$null}

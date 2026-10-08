@@ -261,3 +261,18 @@ OpenAI-compatible providers default to Chat and accept arbitrary model names. Se
 ```
 
 Enable device-code login in your ChatGPT settings if required. Codex uses ChatGPT subscription authentication rather than an OpenAI API key, requires streaming Responses, and automatically refreshes expiring tokens. Credentials are stored separately under the global config directory, protected with Windows user DPAPI or Unix owner-only permissions. Tokens never enter session files. Device login and token refresh are verified with mocks; live account authorization must be completed by the user.
+
+## MCP
+
+MCP supports stdio and Streamable HTTP (JSON or SSE replies), initialization/session headers, paginated tool discovery, progress notifications, structured results, and connection cleanup. Configure `~/.config/power-agent/mcp.json` or `.power-agent/mcp.json` in the workspace; local server definitions override global names. Use `-McpConfig PATH` for explicit configuration files.
+
+```json
+{
+  "mcpServers": {
+    "local": { "command": "pwsh", "args": ["-File", "C:/tools/server.ps1"] },
+    "remote": { "url": "https://example.com/mcp", "headers": { "Authorization": "Bearer ${MCP_TOKEN}" } }
+  }
+}
+```
+
+Only configure trusted servers: stdio commands launch when connecting. Tools are exposed as `mcp_SERVER_TOOL`; Ask mode confirms calls, and ReadOnly disables external tools. Explicit `env` and `headers` values may reference `${VARIABLE}`. MCP OAuth, resource browsing, prompts, sampling, and legacy HTTP+SSE transport are not implemented. Module users call `Connect-GoMcp` and `Disconnect-GoMcp` explicitly.
