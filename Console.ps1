@@ -207,6 +207,19 @@ function Show-GoTerminalStatus {
     Write-Host " session: $([IO.Path]::GetFileName($SessionPath))" -ForegroundColor DarkGray
     Write-Host ' Enter send · Alt+Enter newline · ↑↓ history · Ctrl+O reasoning · Ctrl+T tools · Ctrl+C clear · Ctrl+D exit · /help' -ForegroundColor DarkGray
 }
+function Get-GoTerminalRegion {
+    param([int]$Origin,[int]$Rows,[int]$BufferHeight)
+    $overflow=[Math]::Max(0,$Origin+$Rows-$BufferHeight)
+    @{Origin=[Math]::Max(0,$Origin-$overflow);ScrollRows=$overflow}
+}
+function Clear-GoTerminalRows {
+    param([int]$Origin,[int]$Rows,[int]$Width)
+    $blank=' '*[Math]::Max(1,$Width-1)
+    for ($row=0;$row -lt $Rows -and $Origin+$row -lt [Console]::BufferHeight;$row++) {
+        [Console]::SetCursorPosition(0,$Origin+$row)
+        [Console]::Write($blank)
+    }
+}
 function Read-GoTerminalInput {
     param([Collections.Generic.List[string]]$History,[switch]$Plain,[scriptblock]$OnToggleReasoning,[scriptblock]$OnToggleTools)
     if ($Plain -or [Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {return Read-Host 'you'}
@@ -218,13 +231,6 @@ function Read-GoTerminalInput {
     try {
         while ($true) {
             $width=[Math]::Max(10,[Console]::WindowWidth)
-            # Redraw only the input region; streamed transcript stays in terminal scrollback.
-            [Console]::SetCursorPosition(0,$origin)
-            for ($row=0;$row -lt $rows;$row++) {Write-Host (' '*($width-1));}
-            $origin=[Math]::Max(0,$origin-([Math]::Max(0,$origin+$rows-[Console]::BufferHeight)))
-            [Console]::SetCursorPosition(0,$origin)
-            Write-Host '❯ ' -NoNewline -ForegroundColor Green
-            Write-Host ($text.Replace("`n","`n  ")) -NoNewline
             # Cell positions account for wide CJK and combining characters.
             $line=0;$column=2;$targetLine=0;$targetColumn=2
             for ($i=0;$i -lt $text.Length;$i++) {
@@ -237,8 +243,20 @@ function Read-GoTerminalInput {
                 if ($column -ge $width) {$line++;$column=$column % $width}
             }
             if ($cursor -eq $text.Length) {$targetLine=$line;$targetColumn=$column}
-            $rows=$line+1
-            $origin=[Math]::Min($origin,[Math]::Max(0,[Console]::BufferHeight-$rows))
+            $nextRows=$line+1
+            # Reserve a trailing row only when the region grows. Clearing must never
+            # emit a newline: doing so at the bottom scrolls the transcript per key.
+            $region=Get-GoTerminalRegion $origin ([Math]::Max($rows,$nextRows)+1) ([Console]::BufferHeight)
+            if ($region.ScrollRows -gt 0) {
+                [Console]::SetCursorPosition(0,[Console]::BufferHeight-1)
+                for ($i=0;$i -lt $region.ScrollRows;$i++) {[Console]::WriteLine()}
+            }
+            $origin=$region.Origin
+            Clear-GoTerminalRows $origin ([Math]::Max($rows,$nextRows)) $width
+            [Console]::SetCursorPosition(0,$origin)
+            Write-Host '❯ ' -NoNewline -ForegroundColor Green
+            Write-Host ($text.Replace("`n","`n  ")) -NoNewline
+            $rows=$nextRows
             [Console]::SetCursorPosition($targetColumn,[Math]::Min([Console]::BufferHeight-1,$origin+$targetLine))
             if ($null -ne $pendingKey) {$key=$pendingKey;$pendingKey=$null} else {$key=[Console]::ReadKey($true)}
             if ($key.Modifiers -band [ConsoleModifiers]::Control) {
@@ -330,9 +348,15 @@ function Select-GoTerminalItem {
             $height=[Math]::Max(1,[Math]::Min(8,[Console]::WindowHeight-4))
             $start=[Math]::Max(0,$selected-$height+1)
             $width=[Math]::Max(10,[Console]::WindowWidth-1)
-            [Console]::SetCursorPosition(0,$origin)
-            for ($row=0;$row -lt $drawn;$row++) {Write-Host (' '*$width)}
-            $origin=[Math]::Min($origin,[Math]::Max(0,[Console]::BufferHeight-$drawn))
+            $visible=[Math]::Max(1,[Math]::Min($height,$matches.Count-$start))
+            $nextDrawn=2+$visible
+            $region=Get-GoTerminalRegion $origin ([Math]::Max($drawn,$nextDrawn)+1) ([Console]::BufferHeight)
+            if ($region.ScrollRows -gt 0) {
+                [Console]::SetCursorPosition(0,[Console]::BufferHeight-1)
+                for ($i=0;$i -lt $region.ScrollRows;$i++) {[Console]::WriteLine()}
+            }
+            $origin=$region.Origin
+            Clear-GoTerminalRows $origin ([Math]::Max($drawn,$nextDrawn)) ($width+1)
             [Console]::SetCursorPosition(0,$origin)
             Write-Host "$Title · ↑↓ select · Enter confirm · Esc cancel" -ForegroundColor Cyan
             Write-Host "Search: $filter" -ForegroundColor Gray

@@ -9,6 +9,14 @@ $root=Join-Path ([IO.Path]::GetTempPath()) ('terminal-test-'+[guid]::NewGuid())
 $null=New-Item -ItemType Directory $root
 $module=Get-Module PSGoAgent
 try {
+    $region=Get-GoTerminalRegion 7 2 8
+    Assert ($region.Origin -eq 6 -and $region.ScrollRows -eq 1) 'bottom-row input reserves a trailing row once'
+    $stable=Get-GoTerminalRegion $region.Origin 2 8
+    Assert ($stable.Origin -eq 6 -and $stable.ScrollRows -eq 0) 'typing in reserved rows does not request more scrolling'
+    $grown=Get-GoTerminalRegion $stable.Origin 3 8
+    Assert ($grown.Origin -eq 5 -and $grown.ScrollRows -eq 1) 'wrapped input scrolls only when its region grows'
+    $shrunk=Get-GoTerminalRegion $grown.Origin 2 8
+    Assert ($shrunk.ScrollRows -eq 0) 'deleting a wrapped line does not scroll the transcript'
     $a=New-GoAgent -Workspace $root -Permission ReadOnly
     $a.History.Add(@{kind='user';text='Inspect the café project'})
     $a.History.Add(@{kind='assistant';text='Investigating';calls=@(@{id='c1';name='read';arguments='{"path":"README.md"}'});raw=@{role='assistant';content='Investigating';reasoning_content='private reasoning'}})
