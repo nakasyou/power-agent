@@ -20,6 +20,8 @@ param(
     [switch]$Logout,
     [switch]$Upgrade,
     [switch]$EnableImages,
+    [switch]$EnableWebSearch,
+    [string]$WebSearchModel,
     [switch]$NoStream,
     [switch]$HideReasoning,
     [ValidateSet('Default','Low','Medium','High')][string]$ReasoningEffort='Default',
@@ -50,7 +52,7 @@ if ($Resume) {
     foreach ($key in @('ReasoningEffort','ThinkingBudget')) {if ($PSBoundParameters.ContainsKey($key)) {$thinkingOptions[$key]=$PSBoundParameters[$key]}}
     $agent=Import-GoSession -ApiKey $ApiKey -Path $SessionPath -GlobalConfigDirectory $GlobalConfigDirectory -Permission $Permission -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:$EnableImages @thinkingOptions
 } else {
-    $agent=New-GoAgent -Provider $Provider -ApiKey $ApiKey -Model $Model -Protocol $Protocol -Workspace $Workspace -Permission $Permission -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:$EnableImages -BaseUri $BaseUri -ReasoningEffort $ReasoningEffort -ThinkingBudget $ThinkingBudget -GlobalConfigDirectory $GlobalConfigDirectory
+    $agent=New-GoAgent -Provider $Provider -ApiKey $ApiKey -EnableWebSearch:$EnableWebSearch -WebSearchModel $WebSearchModel -Model $Model -Protocol $Protocol -Workspace $Workspace -Permission $Permission -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:$EnableImages -BaseUri $BaseUri -ReasoningEffort $ReasoningEffort -ThinkingBudget $ThinkingBudget -GlobalConfigDirectory $GlobalConfigDirectory
 }
 $mcpOptions=@{};if ($McpConfig) {$mcpOptions.ConfigPath=$McpConfig}
 Connect-GoMcp $agent @mcpOptions

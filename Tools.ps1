@@ -12,6 +12,7 @@ function Get-GoTools {
         @{name='ls';description='List directory entries alphabetically, including dotfiles; directories have a / suffix. Default 500 entries/50 KiB.';properties=@{path=$string;limit=$positive};required=@()}
     )
     if ($Agent -and $Agent.Skills.Count) {$specs+=@{name='skill';description='Load a discovered global or workspace skill by name before applying its instructions.';properties=@{name=$string};required=@('name')}}
+    if ($Agent -and $Agent.EnableWebSearch) {$specs+=@{name='web_search';description='Search the web using the configured OpenAI-compatible Responses API and return a summary with source URLs.';properties=@{query=$string};required=@('query')}}
     foreach ($spec in $specs) {
         if ($Agent -and $Agent.Permission -eq 'ReadOnly' -and $spec.name -in @('write','edit','powershell')) { continue }
         @{name=$spec.name;description=$spec.description;parameters=@{type='object';properties=$spec.properties;required=$spec.required;additionalProperties=$false}}
@@ -543,6 +544,7 @@ function Invoke-GoTool {
         if ($spec.Count -ne 1) {throw "Unknown tool: $Name"}
         if ($Agent.McpTools.ContainsKey($Name)) {return Invoke-GoMcpTool $Agent $Name $argumentsNormalized $CancellationToken $OnUpdate}
         Assert-GoSchema $argumentsNormalized $spec[0].parameters
+        if ($Name -eq 'web_search') {return Invoke-GoWebSearch $Agent $argumentsNormalized.query $CancellationToken $OnUpdate}
         if ($Name -eq 'skill') {if (-not $Agent.Skills.ContainsKey($argumentsNormalized.name)) {throw 'Unknown skill.'};return New-GoToolResult $Agent.Skills[$argumentsNormalized.name].Content}
         $path=if ($Name -ne 'powershell') {Resolve-GoPath $Agent $(if ($argumentsNormalized.ContainsKey('path')) {$argumentsNormalized.path} else {'.'})} else {$null}
         if ($Name -in @('write','edit','powershell')) {
