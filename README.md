@@ -28,6 +28,18 @@ $env:OPENCODE_API_KEY = 'your-opencode-api-key'
 
 PowerShell 7 を `pwsh` として起動してください。Windows PowerShell 5.1 は対象外です。Windows の実行ポリシーでブロックされる場合は、所属組織の方針に従ってスクリプトの実行を許可してください。
 
+## 更新
+
+```powershell
+./Upgrade.ps1
+# または API キー不要の起動オプション
+./Start-GoAgent.ps1 -Upgrade
+```
+
+対話中は `/upgrade` でも更新できます。GitHub の `nakasyou/power-agent` の `main` を取得・解凍し、スクリプト自身のディレクトリへ上書きします。完了後はエージェントを再起動してください。`-Workspace` のプロジェクトを更新先にはしません。
+
+セッション、`.env`、`.git`、独自ファイルは残します。配布スクリプト・README・docs・tests の同名ファイルへの変更は上書きされます。取得と検証が成功してから配置し、配置に失敗した場合は更新済みファイルを復元します。対話中に `-SessionPath` を指定していれば更新前に会話を保存します。Windows では配置したファイルを `Unblock-File` で解除します。実行ポリシーそのものは変更しません。
+
 ## ストリーミング表示（0.3.0）
 
 CLI は既定で、モデルの reasoning と本文、実行中の PowerShell ツール出力を随時表示します。
@@ -228,9 +240,10 @@ pwsh -NoProfile -File ./tests/Run-Tests.ps1
 pwsh -NoProfile -File ./tests/Tools.Tests.ps1
 pwsh -NoProfile -File ./tests/Http.Tests.ps1
 pwsh -NoProfile -File ./tests/Streaming.Tests.ps1
+pwsh -NoProfile -File ./tests/Upgrade.Tests.ps1
 ```
 
-PowerShell 7.6.3 / Linux で、194件のアサーションと3方式の実 HTTP モック統合シナリオを検証済み。複数編集・失敗時の無変更・補助照合・BOM／改行保持・パッチの適用結果・別プロセス間の変更ロック、検索と除外設定、画像の API 形式変換、出力制限・更新・キャンセルに加え、認証・ツール往復・保存／再開・429再試行を確認しました。SSE の分割 UTF-8／複数行データ、reasoning／本文のリアルタイム通知、分割ツール引数、途中切断・キャンセル・タイムアウト、CLI の重複しない表示も検証しました。OpenCode Go の API キーが提供されていないため実サービス接続は未検証です。Windows / macOS での実行は未検証です。
+PowerShell 7.6.3 / Linux で、206件のアサーションと3方式の実 HTTP モック統合シナリオを検証済み。複数編集・失敗時の無変更・補助照合・BOM／改行保持・パッチの適用結果・別プロセス間の変更ロック、検索と除外設定、画像の API 形式変換、出力制限・更新・キャンセルに加え、認証・ツール往復・保存／再開・429再試行を確認しました。SSE の分割 UTF-8／複数行データ、reasoning／本文のリアルタイム通知、分割ツール引数、途中切断・キャンセル・タイムアウト、CLI の重複しない表示も検証しました。OpenCode Go の API キーが提供されていないため実サービス接続は未検証です。Windows / macOS での実行は未検証です。
 
 ## 参考
 

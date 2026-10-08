@@ -9,6 +9,7 @@ param(
     [string]$SessionPath,
     [switch]$Resume,
     [switch]$ListModels,
+    [switch]$Upgrade,
     [switch]$EnableImages,
     [switch]$NoStream,
     [switch]$HideReasoning,
@@ -20,6 +21,7 @@ param(
     [string]$BaseUri='https://opencode.ai/zen/go/v1'
 )
 $ErrorActionPreference='Stop'
+if ($Upgrade) { & (Join-Path $PSScriptRoot 'Upgrade.ps1'); return }
 Import-Module (Join-Path $PSScriptRoot 'PSGoAgent.psd1') -Force
 . (Join-Path $PSScriptRoot 'Console.ps1')
 $renderer=New-GoConsoleRenderer -HideReasoning:$HideReasoning
@@ -35,13 +37,21 @@ if ($Resume) {
 }
 if ($PSBoundParameters.ContainsKey('Prompt')) { Invoke-GoAgent -Agent $agent -Prompt $Prompt -SessionPath $SessionPath -NoStream:$NoStream -OnEvent $renderer | Out-Null; return }
 Write-Host "PSGoAgent | $($agent.Model) | $($agent.Protocol) | $($agent.Workspace)"
-Write-Host '/exit 終了、/new 新規会話、/save PATH 保存、/help ヘルプ'
+Write-Host '/exit 終了、/new 新規会話、/save PATH 保存、/upgrade 更新、/help ヘルプ'
 while ($true) {
     $line=Read-Host 'you'
     if ($null -eq $line -or $line -eq '/exit') { break }
     if ([string]::IsNullOrWhiteSpace($line)) { continue }
     if ($line -eq '/help') {
-        Write-Host '/exit, /new, /save PATH。複数行の依頼は -Prompt (Get-Content request.txt -Raw) で渡せます。'; continue
+        Write-Host '/exit, /new, /save PATH, /upgrade。複数行の依頼は -Prompt (Get-Content request.txt -Raw) で渡せます。'; continue
+    }
+    if ($line -eq '/upgrade') {
+        try {
+            if ($SessionPath) { Save-GoSession $agent $SessionPath }
+            & (Join-Path $PSScriptRoot 'Upgrade.ps1')
+            break
+        } catch { Write-Host $_.Exception.Message -ForegroundColor Red }
+        continue
     }
     if ($line -eq '/new') {
         $agent.History.Clear(); $agent.Id=[guid]::NewGuid().ToString()
