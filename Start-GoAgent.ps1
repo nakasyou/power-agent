@@ -7,6 +7,7 @@ param(
     [string]$Workspace = (Get-Location).Path,
     [ValidateSet('Ask','ReadOnly','Auto')][string]$Permission = 'Ask',
     [string]$SessionPath,
+    [string]$GlobalConfigDirectory=(Join-Path ([Environment]::GetFolderPath('UserProfile')) '.config/power-agent'),
     [switch]$Resume,
     [string]$SessionDirectory = (Join-Path $PSScriptRoot 'sessions'),
     [switch]$Plain,
@@ -39,9 +40,9 @@ if ($Resume) {
     }
     $thinkingOptions=@{}
     foreach ($key in @('ReasoningEffort','ThinkingBudget')) {if ($PSBoundParameters.ContainsKey($key)) {$thinkingOptions[$key]=$PSBoundParameters[$key]}}
-    $agent=Import-GoSession -Path $SessionPath -Permission $Permission -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:$EnableImages @thinkingOptions
+    $agent=Import-GoSession -Path $SessionPath -GlobalConfigDirectory $GlobalConfigDirectory -Permission $Permission -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:$EnableImages @thinkingOptions
 } else {
-    $agent=New-GoAgent -Model $Model -Protocol $Protocol -Workspace $Workspace -Permission $Permission -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:$EnableImages -BaseUri $BaseUri -ReasoningEffort $ReasoningEffort -ThinkingBudget $ThinkingBudget
+    $agent=New-GoAgent -Model $Model -Protocol $Protocol -Workspace $Workspace -Permission $Permission -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:$EnableImages -BaseUri $BaseUri -ReasoningEffort $ReasoningEffort -ThinkingBudget $ThinkingBudget -GlobalConfigDirectory $GlobalConfigDirectory
 }
 $agent | Add-Member -NotePropertyName MaxRetries -NotePropertyValue $MaxRetries -Force
 if (-not $SessionPath) {$SessionPath=Join-Path $SessionDirectory ($agent.Id+'.session.json')}
@@ -115,7 +116,7 @@ while ($true) {
                 if ($number -lt 1 -or $number -gt $sessions.Count) {throw 'Session number is out of range.'}
                 $selection=$sessions[$number-1].Path
             }
-            $resumed=Import-GoSession -Path $selection -Permission $Permission -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds
+            $resumed=Import-GoSession -Path $selection -GlobalConfigDirectory $GlobalConfigDirectory -Permission $Permission -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds
             Save-GoSession $agent $SessionPath
             $agent=$resumed
             $agent | Add-Member -NotePropertyName MaxRetries -NotePropertyValue $MaxRetries -Force

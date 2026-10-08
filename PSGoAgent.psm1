@@ -90,6 +90,58 @@ function Get-GoModelCatalog {
     }
 }
 
+function Get-GoInstructionContext {
+    param([string]$Workspace,[string]$GlobalDirectory)
+    $instructions=[Collections.Generic.List[string]]::new()
+    $globalFile=Join-Path $GlobalDirectory 'AGENTS.md'
+    if (Test-Path -LiteralPath $globalFile -PathType Leaf) {$instructions.Add("Global instructions ($globalFile):`n"+[IO.File]::ReadAllText($globalFile))}
+    $chain=[Collections.Generic.List[string]]::new();$cursor=$Workspace;$foundRoot=$false
+    while ($cursor) {
+        $chain.Add($cursor)
+        if (Test-Path -LiteralPath (Join-Path $cursor '.git')) {$foundRoot=$true;break}
+        $parent=[IO.Path]::GetDirectoryName($cursor)
+        if ($parent -eq $cursor) {break};$cursor=$parent
+    }
+    if (-not $foundRoot) {$chain.Clear();$chain.Add($Workspace)}
+    for ($i=$chain.Count-1;$i -ge 0;$i--) {
+        $file=Join-Path $chain[$i] 'AGENTS.md'
+        if (Test-Path -LiteralPath $file -PathType Leaf) {$instructions.Add("Workspace instructions ($file):`n"+[IO.File]::ReadAllText($file))}
+    }
+    $skills=@{}
+    foreach ($directory in @((Join-Path $GlobalDirectory 'skills'),(Join-Path $Workspace '.agents/skills'),(Join-Path $Workspace '.power-agent/skills'))) {
+        if (-not (Test-Path -LiteralPath $directory -PathType Container)) {continue}
+        foreach ($folder in Get-ChildItem -LiteralPath $directory -Directory) {
+            $file=Join-Path $folder.FullName 'SKILL.md'
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {continue}
+            $body=[IO.File]::ReadAllText($file);$name=$folder.Name;$description='Local skill instructions'
+            if ($body -match '(?s)\A---\r?\n(.*?)\r?\n---') {
+                $front=$Matches[1]
+                if ($front -match '(?m)^name:\s*(.+)$') {$name=$Matches[1].Trim().Trim("'",'"')}
+                if ($front -match '(?m)^description:\s*(.+)$') {$description=$Matches[1].Trim().Trim("'",'"')}
+            }
+            if ($name -notmatch '^[a-zA-Z0-9_-]+$') {throw "Invalid skill name in $file"}
+            $skills[$name]=@{Name=$name;Description=$description;Path=$file;Content=$body}
+        }
+    }
+    if ($skills.Count) {
+        $instructions.Add("Available skills (load a relevant skill with the skill tool before using its instructions):`n"+(@($skills.Keys | Sort-Object | ForEach-Object {"$($_): $($skills[$_].Description)"}) -join "`n"))
+    }
+    @{Text=$instructions -join "`n`n";Skills=$skills}
+}
+function Get-GoScopedInstructions {
+    param($Agent,[string]$Path)
+    $directory=if (Test-Path -LiteralPath $Path -PathType Container) {$Path} else {[IO.Path]::GetDirectoryName($Path)}
+    $chain=[Collections.Generic.List[string]]::new()
+    while ($directory -and $directory -ne $Agent.Workspace) {
+        $relative=[IO.Path]::GetRelativePath($Agent.Workspace,$directory)
+        if ($relative -eq '..' -or $relative.StartsWith('..'+[IO.Path]::DirectorySeparatorChar)) {break}
+        $file=Join-Path $directory 'AGENTS.md'
+        if (Test-Path -LiteralPath $file -PathType Leaf) {$null=Resolve-GoPath $Agent $file;$chain.Insert(0,"Instructions scoped to $directory (AGENTS.md):`n"+[IO.File]::ReadAllText($file))}
+        $directory=[IO.Path]::GetDirectoryName($directory)
+    }
+    $chain -join "`n`n"
+}
+
 function New-GoAgent {
     [CmdletBinding()]
     param(
@@ -107,7 +159,8 @@ function New-GoAgent {
         [switch]$EnableImages,
         [ValidateSet('Default','Low','Medium','High')][string]$ReasoningEffort='Default',
         [ValidateRange(0,65535)][int]$ThinkingBudget=0,
-        [ValidateRange(0,10)][int]$MaxRetries=2
+        [ValidateRange(0,10)][int]$MaxRetries=2,
+        [string]$GlobalConfigDirectory=(Join-Path ([Environment]::GetFolderPath('UserProfile')) '.config/power-agent')
     )
     if ($ThinkingBudget -gt 0 -and ($ThinkingBudget -lt 1024 -or $ThinkingBudget -ge $MaxTokens)) {throw 'ThinkingBudget must be at least 1024 and less than MaxTokens.'}
     $root = (Resolve-Path -LiteralPath $Workspace).Path
@@ -128,9 +181,10 @@ Do not claim execution or validation without tool evidence. Respect denied actio
 The powershell tool runs PowerShell, not bash. Use read for files; grep/find/ls for searches. Use write only for new files or full rewrites. Give concise answers in the user's language.
 $Instructions
 "@
-    $agentsFile = Join-Path $root 'AGENTS.md'
-    if (Test-Path -LiteralPath $agentsFile -PathType Leaf) { $system += "`nWorkspace instructions (AGENTS.md):`n" + [IO.File]::ReadAllText($agentsFile) }
+    $context=Get-GoInstructionContext $root $GlobalConfigDirectory
+    $system+="`n"+$context.Text
     [pscustomobject]@{
+        Skills=$context.Skills; GlobalConfigDirectory=$GlobalConfigDirectory
         PSTypeName='PSGoAgent'; Version=1; Id=[guid]::NewGuid().ToString()
         Model=$Model; Protocol=$Protocol; Workspace=$root; BaseUri=$BaseUri.TrimEnd('/')
         MaxRetries=$MaxRetries; MaxTurns=$MaxTurns; MaxTokens=$MaxTokens; TimeoutSeconds=$TimeoutSeconds; Permission=$Permission
@@ -360,7 +414,7 @@ function Save-GoSession {
 
 function Import-GoSession {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Path,[ValidateSet('Ask','ReadOnly','Auto')][string]$Permission='Ask', [scriptblock]$Transport, [scriptblock]$Approve,
+    param([Parameter(Mandatory)][string]$Path,[string]$GlobalConfigDirectory=(Join-Path ([Environment]::GetFolderPath('UserProfile')) '.config/power-agent'),[ValidateSet('Ask','ReadOnly','Auto')][string]$Permission='Ask', [scriptblock]$Transport, [scriptblock]$Approve,
         [string]$BaseUri='https://opencode.ai/zen/go/v1',
         [ValidateRange(1,1000)][int]$MaxTurns=30,
         [ValidateRange(1,65536)][int]$MaxTokens=8192,
@@ -371,7 +425,7 @@ function Import-GoSession {
     if ($state.Version -ne 1) { throw 'Unsupported session version.' }
     if (-not $PSBoundParameters.ContainsKey('ReasoningEffort') -and $state.ContainsKey('ReasoningEffort')) {$ReasoningEffort=$state.ReasoningEffort}
     if (-not $PSBoundParameters.ContainsKey('ThinkingBudget') -and $state.ContainsKey('ThinkingBudget')) {$ThinkingBudget=$state.ThinkingBudget}
-    $agent=New-GoAgent -Model $state.Model -Protocol $state.Protocol -Workspace $state.Workspace -Permission $Permission -Transport $Transport -Approve $Approve -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:($EnableImages -or ($state.ContainsKey('EnableImages') -and $state.EnableImages)) -ReasoningEffort $ReasoningEffort -ThinkingBudget $ThinkingBudget
+    $agent=New-GoAgent -Model $state.Model -Protocol $state.Protocol -Workspace $state.Workspace -Permission $Permission -Transport $Transport -Approve $Approve -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:($EnableImages -or ($state.ContainsKey('EnableImages') -and $state.EnableImages)) -ReasoningEffort $ReasoningEffort -ThinkingBudget $ThinkingBudget -GlobalConfigDirectory $GlobalConfigDirectory
     $agent.Id=$state.Id; $agent.System=$state.System
     foreach ($m in $state.History) { $agent.History.Add($m) }
     $agent
