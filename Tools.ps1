@@ -11,6 +11,7 @@ function Get-GoTools {
         @{name='find';description='Find files/directories by glob; relative paths, hidden entries, .gitignore/.ignore respected. Default 1000 results/50 KiB.';properties=@{pattern=$string;path=$string;limit=$positive};required=@('pattern')}
         @{name='ls';description='List directory entries alphabetically, including dotfiles; directories have a / suffix. Default 500 entries/50 KiB.';properties=@{path=$string;limit=$positive};required=@()}
     )
+    if ($Agent -and $Agent.Skills.Count) {$specs+=@{name='skill';description='Load a discovered global or workspace skill by name before applying its instructions.';properties=@{name=$string};required=@('name')}}
     foreach ($spec in $specs) {
         if ($Agent -and $Agent.Permission -eq 'ReadOnly' -and $spec.name -in @('write','edit','powershell')) { continue }
         @{name=$spec.name;description=$spec.description;parameters=@{type='object';properties=$spec.properties;required=$spec.required;additionalProperties=$false}}
@@ -535,9 +536,11 @@ function Invoke-GoTool {
         $CancellationToken.ThrowIfCancellationRequested()
         $Name=switch ($Name) {'shell' {'powershell'} 'list' {'ls'} default {$Name}}
         $argumentsNormalized=ConvertTo-GoArguments $Name $Arguments
-        $spec=@(Get-GoTools | Where-Object name -EQ $Name)
+        $spec=@(Get-GoTools $Agent | Where-Object name -EQ $Name)
+        if (-not $spec.Count -and $Agent.Permission -eq 'ReadOnly' -and $Name -in @('write','edit','powershell')) {throw 'Action denied by ReadOnly permission.'}
         if ($spec.Count -ne 1) {throw "Unknown tool: $Name"}
         Assert-GoSchema $argumentsNormalized $spec[0].parameters
+        if ($Name -eq 'skill') {if (-not $Agent.Skills.ContainsKey($argumentsNormalized.name)) {throw 'Unknown skill.'};return New-GoToolResult $Agent.Skills[$argumentsNormalized.name].Content}
         $path=if ($Name -ne 'powershell') {Resolve-GoPath $Agent $(if ($argumentsNormalized.ContainsKey('path')) {$argumentsNormalized.path} else {'.'})} else {$null}
         if ($Name -in @('write','edit','powershell')) {
             if ($Agent.Permission -eq 'ReadOnly') {throw 'Action denied by ReadOnly permission.'}
@@ -558,13 +561,18 @@ function Invoke-GoTool {
             }
         }
         $CancellationToken.ThrowIfCancellationRequested()
-        switch ($Name) {
+        $result=switch ($Name) {
             'read' {Invoke-GoRead $path $argumentsNormalized}
             'write' {Write-GoFile $path ([Text.Encoding]::UTF8.GetBytes($argumentsNormalized.content));New-GoToolResult "Wrote $([Text.Encoding]::UTF8.GetByteCount($argumentsNormalized.content)) bytes to $($argumentsNormalized.path)."}
             'edit' {Invoke-GoEdit $path $argumentsNormalized.edits $CancellationToken}
             'powershell' {Invoke-GoPowerShell $Agent $argumentsNormalized $CancellationToken $OnUpdate}
             default {Invoke-GoSearch $Agent $Name $path $argumentsNormalized $CancellationToken}
         }
+        if ($path -and $Name -in @('read','ls','grep','find')) {
+            $scoped=Get-GoScopedInstructions $Agent $path
+            if ($scoped) {$result.text="$scoped`n`n$($result.text)"}
+        }
+        $result
     } catch {New-GoToolResult $_.Exception.Message $true}
     finally {if ($locked) {$mutex.ReleaseMutex()};if ($mutex) {$mutex.Dispose()}}
 }

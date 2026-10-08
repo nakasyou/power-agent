@@ -232,3 +232,9 @@ Implementation and reference mappings: [design notes](docs/design.md).
 - [OpenCode Go documentation](https://opencode.ai/docs/go/): APIs, model IDs, and session headers
 
 MIT license. See [LICENSE](LICENSE).
+
+## Instructions and skills
+
+Global instructions live in `~/.config/power-agent/AGENTS.md`; global skills live in its `skills/<name>/SKILL.md` directory. Change this root with `-GlobalConfigDirectory`.
+
+Local instructions are read from AGENTS.md files between the nearest Git root and the workspace. Nested AGENTS.md instructions accompany file/search results only for their directory scope. Local skills in `.agents/skills` and `.power-agent/skills` override global skills with the same name. Skills use optional `name` and `description` frontmatter, appear in the system catalog, and are loaded on demand with the `skill` tool. Resuming a session rediscovers installed skills.
