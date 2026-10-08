@@ -11,9 +11,9 @@ function Set-GoModel {
     if (-not $Model.Trim()) {throw 'Model cannot be empty.'}
     if ($Protocol -eq 'Auto') {
         $entry=@(Get-GoModelCatalog | Where-Object Model -EQ $Model)
-        if ($entry.Count -ne 1) {throw 'Unknown model. Use /model NAME Chat|Messages|Responses.'}
-        $Protocol=$entry[0].Protocol
+        if ($Agent.Provider -ne 'OpenCodeGo') {$Protocol='Chat'} elseif ($entry.Count -ne 1) {throw 'Unknown model. Use /model NAME Chat|Messages|Responses.'} else {$Protocol=$entry[0].Protocol}
     }
+    if ($Agent.Provider -eq 'OpenAI' -and $Protocol -eq 'Messages') {throw 'OpenAI-compatible providers support Chat or Responses.'}
     if ($Agent.Model -eq $Model -and $Agent.Protocol -eq $Protocol) {return}
     # Provider reasoning signatures and response IDs cannot be reused by another model.
     # Convert from canonical text/calls without replaying tools or altering their results.
@@ -148,7 +148,9 @@ function New-GoAgent {
         [string]$Model = 'glm-5.3-flash',
         [ValidateSet('Auto','Chat','Messages','Responses')][string]$Protocol = 'Auto',
         [string]$Workspace = (Get-Location).Path,
-        [string]$BaseUri = 'https://opencode.ai/zen/go/v1',
+        [string]$BaseUri = '',
+        [ValidateSet('OpenCodeGo','OpenAI')][string]$Provider='OpenCodeGo',
+        [string]$ApiKey,
         [ValidateRange(1,1000)][int]$MaxTurns = 30,
         [ValidateRange(1,65536)][int]$MaxTokens = 8192,
         [ValidateRange(1,3600)][int]$TimeoutSeconds = 120,
@@ -168,9 +170,10 @@ function New-GoAgent {
     $Model = $Model -replace '^opencode-go/', ''
     if ($Protocol -eq 'Auto') {
         $entry = @(Get-GoModelCatalog | Where-Object Model -EQ $Model)
-        if ($entry.Count -ne 1) { throw "Unknown model '$Model'. Specify -Protocol Chat, Messages or Responses." }
-        $Protocol = $entry[0].Protocol
+        if ($Provider -eq 'OpenAI') {$Protocol='Chat'} elseif ($entry.Count -ne 1) { throw "Unknown model '$Model'. Specify -Protocol Chat, Messages or Responses." } else {$Protocol=$entry[0].Protocol}
     }
+    if (-not $BaseUri) {$BaseUri=if ($Provider -eq 'OpenAI') {'https://api.openai.com/v1'} else {'https://opencode.ai/zen/go/v1'}}
+    if ($Provider -eq 'OpenAI' -and $Protocol -eq 'Messages') {throw 'OpenAI-compatible providers support Chat or Responses.'}
     $uri = [uri]$BaseUri
     if (-not $uri.IsAbsoluteUri -or ($uri.Scheme -ne 'https' -and -not ($uri.Scheme -eq 'http' -and $uri.IsLoopback))) { throw 'BaseUri must be HTTPS (or loopback HTTP for tests).' }
     $system = @"
@@ -184,6 +187,7 @@ $Instructions
     $context=Get-GoInstructionContext $root $GlobalConfigDirectory
     $system+="`n"+$context.Text
     [pscustomobject]@{
+        Provider=$Provider; ApiKey=$ApiKey
         Skills=$context.Skills; GlobalConfigDirectory=$GlobalConfigDirectory
         PSTypeName='PSGoAgent'; Version=1; Id=[guid]::NewGuid().ToString()
         Model=$Model; Protocol=$Protocol; Workspace=$root; BaseUri=$BaseUri.TrimEnd('/')
@@ -219,7 +223,11 @@ function Resolve-GoPath($Agent, [string]$Path) {
 
 function New-GoRequest($Agent,[bool]$Stream=$false) {
     $tools = @(Get-GoTools $Agent)
-    $headers = @{Authorization="Bearer $env:OPENCODE_API_KEY";'x-opencode-session'=$Agent.Id}
+    $key=$Agent.ApiKey
+    if (-not $key) {$key=if ($Agent.Provider -eq 'OpenAI') {$env:OPENAI_API_KEY} else {$env:OPENCODE_API_KEY}}
+    $headers=@{}
+    if ($key) {$headers.Authorization="Bearer $key"}
+    if ($Agent.Provider -eq 'OpenCodeGo') {$headers['x-opencode-session']=$Agent.Id}
     $body = @{model=$Agent.Model;stream=$Stream}
     $pendingImages=[Collections.Generic.List[object]]::new()
     switch ($Agent.Protocol) {
@@ -248,7 +256,7 @@ function New-GoRequest($Agent,[bool]$Stream=$false) {
             $body.tools=@($tools | ForEach-Object { @{type='function';function=$_} })
         }
         'Messages' {
-            $endpoint='messages'; $headers['x-api-key']=$env:OPENCODE_API_KEY; $headers['anthropic-version']='2023-06-01'
+            $endpoint='messages'; $headers['x-api-key']=$key; $headers['anthropic-version']='2023-06-01'
             $messages = [Collections.Generic.List[object]]::new()
             foreach ($m in $Agent.History) {
                 switch ($m.kind) {
@@ -302,7 +310,7 @@ function Send-GoRequest($Agent, $Request,[Threading.CancellationToken]$Cancellat
         return $response
     }
     if ($Request.Body.stream) {return Send-GoStreamRequest $Agent $Request $CancellationToken $OnEvent}
-    if ([string]::IsNullOrWhiteSpace($env:OPENCODE_API_KEY)) { throw 'Set OPENCODE_API_KEY to your OpenCode Go API key.' }
+    if (-not $Request.Headers.ContainsKey('Authorization') -and -not ([uri]$Request.Uri).IsLoopback) {throw 'Set the provider API key (OPENCODE_API_KEY or OPENAI_API_KEY), or use -ApiKey.'}
     for ($attempt=0; $attempt -le $Agent.MaxRetries; $attempt++) {
         $CancellationToken.ThrowIfCancellationRequested()
         try {
@@ -402,7 +410,7 @@ function Invoke-GoAgent {
 function Save-GoSession {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Agent,[Parameter(Mandatory)][string]$Path)
-    $state = @{Version=1;Id=$Agent.Id;Model=$Agent.Model;Protocol=$Agent.Protocol;Workspace=$Agent.Workspace;System=$Agent.System;EnableImages=$Agent.EnableImages;ReasoningEffort=$Agent.ReasoningEffort;ThinkingBudget=$Agent.ThinkingBudget;History=@($Agent.History.ToArray())}
+    $state = @{Provider=$Agent.Provider;BaseUri=$Agent.BaseUri;Version=1;Id=$Agent.Id;Model=$Agent.Model;Protocol=$Agent.Protocol;Workspace=$Agent.Workspace;System=$Agent.System;EnableImages=$Agent.EnableImages;ReasoningEffort=$Agent.ReasoningEffort;ThinkingBudget=$Agent.ThinkingBudget;History=@($Agent.History.ToArray())}
     $full = [IO.Path]::GetFullPath($Path)
     $null=[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($full))
     $temporary=$full+'.'+[guid]::NewGuid().ToString()+'.tmp'
@@ -415,7 +423,7 @@ function Save-GoSession {
 function Import-GoSession {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path,[string]$GlobalConfigDirectory=(Join-Path ([Environment]::GetFolderPath('UserProfile')) '.config/power-agent'),[ValidateSet('Ask','ReadOnly','Auto')][string]$Permission='Ask', [scriptblock]$Transport, [scriptblock]$Approve,
-        [string]$BaseUri='https://opencode.ai/zen/go/v1',
+        [string]$BaseUri='',[ValidateSet('OpenCodeGo','OpenAI')][string]$Provider='OpenCodeGo',[string]$ApiKey,
         [ValidateRange(1,1000)][int]$MaxTurns=30,
         [ValidateRange(1,65536)][int]$MaxTokens=8192,
         [ValidateRange(1,3600)][int]$TimeoutSeconds=120,[switch]$EnableImages,
@@ -425,7 +433,9 @@ function Import-GoSession {
     if ($state.Version -ne 1) { throw 'Unsupported session version.' }
     if (-not $PSBoundParameters.ContainsKey('ReasoningEffort') -and $state.ContainsKey('ReasoningEffort')) {$ReasoningEffort=$state.ReasoningEffort}
     if (-not $PSBoundParameters.ContainsKey('ThinkingBudget') -and $state.ContainsKey('ThinkingBudget')) {$ThinkingBudget=$state.ThinkingBudget}
-    $agent=New-GoAgent -Model $state.Model -Protocol $state.Protocol -Workspace $state.Workspace -Permission $Permission -Transport $Transport -Approve $Approve -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:($EnableImages -or ($state.ContainsKey('EnableImages') -and $state.EnableImages)) -ReasoningEffort $ReasoningEffort -ThinkingBudget $ThinkingBudget -GlobalConfigDirectory $GlobalConfigDirectory
+    if (-not $PSBoundParameters.ContainsKey('Provider') -and $state.ContainsKey('Provider')) {$Provider=$state.Provider}
+    if (-not $BaseUri -and $state.ContainsKey('BaseUri')) {$BaseUri=$state.BaseUri}
+    $agent=New-GoAgent -Provider $Provider -ApiKey $ApiKey -Model $state.Model -Protocol $state.Protocol -Workspace $state.Workspace -Permission $Permission -Transport $Transport -Approve $Approve -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:($EnableImages -or ($state.ContainsKey('EnableImages') -and $state.EnableImages)) -ReasoningEffort $ReasoningEffort -ThinkingBudget $ThinkingBudget -GlobalConfigDirectory $GlobalConfigDirectory
     $agent.Id=$state.Id; $agent.System=$state.System
     foreach ($m in $state.History) { $agent.History.Add($m) }
     $agent

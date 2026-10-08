@@ -177,7 +177,7 @@ function Read-GoSseResponse($Stream,[string]$Protocol,[Threading.CancellationTok
 }
 
 function Send-GoStreamRequest($Agent,$Request,[Threading.CancellationToken]$CancellationToken,[scriptblock]$OnEvent) {
-    if ([string]::IsNullOrWhiteSpace($env:OPENCODE_API_KEY)) {throw 'Set OPENCODE_API_KEY to your OpenCode Go API key.'}
+    if (-not $Request.Headers.ContainsKey('Authorization') -and -not ([uri]$Request.Uri).IsLoopback) {throw 'Set the provider API key (OPENCODE_API_KEY or OPENAI_API_KEY), or use -ApiKey.'}
     $client=[Net.Http.HttpClient]::new();$client.Timeout=[Threading.Timeout]::InfiniteTimeSpan
     $timeout=[Threading.CancellationTokenSource]::CreateLinkedTokenSource($CancellationToken)
     $timeout.CancelAfter([TimeSpan]::FromSeconds($Agent.TimeoutSeconds));$token=$timeout.Token

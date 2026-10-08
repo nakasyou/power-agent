@@ -3,6 +3,8 @@
 param(
     [string]$Prompt,
     [string]$Model = 'glm-5.3-flash',
+    [ValidateSet('OpenCodeGo','OpenAI')][string]$Provider='OpenCodeGo',
+    [string]$ApiKey,
     [ValidateSet('Auto','Chat','Messages','Responses')][string]$Protocol = 'Auto',
     [string]$Workspace = (Get-Location).Path,
     [ValidateSet('Ask','ReadOnly','Auto')][string]$Permission = 'Ask',
@@ -22,7 +24,7 @@ param(
     [ValidateRange(1,1000)][int]$MaxTurns=30,
     [ValidateRange(1,65536)][int]$MaxTokens=8192,
     [ValidateRange(1,3600)][int]$TimeoutSeconds=120,
-    [string]$BaseUri='https://opencode.ai/zen/go/v1'
+    [string]$BaseUri=''
 )
 $ErrorActionPreference='Stop'
 if ($Upgrade) { & (Join-Path $PSScriptRoot 'Upgrade.ps1'); return }
@@ -31,7 +33,7 @@ Import-Module (Join-Path $PSScriptRoot 'PSGoAgent.psd1') -Force
 $consoleState=@{}
 $renderer=New-GoConsoleRenderer -HideReasoning:$HideReasoning -CompactReasoning -Plain:$Plain -State $consoleState
 if ($ListModels) { Get-GoModelCatalog; return }
-if (-not $env:OPENCODE_API_KEY) { throw 'Set OPENCODE_API_KEY to your OpenCode Go API key.' }
+if ($Provider -eq 'OpenAI' -and -not $PSBoundParameters.ContainsKey('Model')) {$Model='gpt-4.1'}
 if ($Resume) {
     if (-not $SessionPath) {
         $latest=Get-GoSessionList $SessionDirectory ([IO.Path]::GetFullPath($Workspace)) | Sort-Object Updated -Descending | Select-Object -First 1
@@ -40,9 +42,9 @@ if ($Resume) {
     }
     $thinkingOptions=@{}
     foreach ($key in @('ReasoningEffort','ThinkingBudget')) {if ($PSBoundParameters.ContainsKey($key)) {$thinkingOptions[$key]=$PSBoundParameters[$key]}}
-    $agent=Import-GoSession -Path $SessionPath -GlobalConfigDirectory $GlobalConfigDirectory -Permission $Permission -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:$EnableImages @thinkingOptions
+    $agent=Import-GoSession -ApiKey $ApiKey -Path $SessionPath -GlobalConfigDirectory $GlobalConfigDirectory -Permission $Permission -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:$EnableImages @thinkingOptions
 } else {
-    $agent=New-GoAgent -Model $Model -Protocol $Protocol -Workspace $Workspace -Permission $Permission -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:$EnableImages -BaseUri $BaseUri -ReasoningEffort $ReasoningEffort -ThinkingBudget $ThinkingBudget -GlobalConfigDirectory $GlobalConfigDirectory
+    $agent=New-GoAgent -Provider $Provider -ApiKey $ApiKey -Model $Model -Protocol $Protocol -Workspace $Workspace -Permission $Permission -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:$EnableImages -BaseUri $BaseUri -ReasoningEffort $ReasoningEffort -ThinkingBudget $ThinkingBudget -GlobalConfigDirectory $GlobalConfigDirectory
 }
 $agent | Add-Member -NotePropertyName MaxRetries -NotePropertyValue $MaxRetries -Force
 if (-not $SessionPath) {$SessionPath=Join-Path $SessionDirectory ($agent.Id+'.session.json')}
@@ -116,7 +118,7 @@ while ($true) {
                 if ($number -lt 1 -or $number -gt $sessions.Count) {throw 'Session number is out of range.'}
                 $selection=$sessions[$number-1].Path
             }
-            $resumed=Import-GoSession -Path $selection -GlobalConfigDirectory $GlobalConfigDirectory -Permission $Permission -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds
+            $resumed=Import-GoSession -ApiKey $ApiKey -Path $selection -GlobalConfigDirectory $GlobalConfigDirectory -Permission $Permission -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds
             Save-GoSession $agent $SessionPath
             $agent=$resumed
             $agent | Add-Member -NotePropertyName MaxRetries -NotePropertyValue $MaxRetries -Force
