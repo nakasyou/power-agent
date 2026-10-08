@@ -28,8 +28,11 @@ function New-GoAgent {
         [string]$Instructions = '',
         [scriptblock]$Transport,
         [scriptblock]$Approve,
-        [switch]$EnableImages
+        [switch]$EnableImages,
+        [ValidateSet('Default','Low','Medium','High')][string]$ReasoningEffort='Default',
+        [ValidateRange(0,65535)][int]$ThinkingBudget=0
     )
+    if ($ThinkingBudget -gt 0 -and ($ThinkingBudget -lt 1024 -or $ThinkingBudget -ge $MaxTokens)) {throw 'ThinkingBudget must be at least 1024 and less than MaxTokens.'}
     $root = (Resolve-Path -LiteralPath $Workspace).Path
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'Workspace must be a directory.' }
     $Model = $Model -replace '^opencode-go/', ''
@@ -55,7 +58,7 @@ $Instructions
         Model=$Model; Protocol=$Protocol; Workspace=$root; BaseUri=$BaseUri.TrimEnd('/')
         MaxTurns=$MaxTurns; MaxTokens=$MaxTokens; TimeoutSeconds=$TimeoutSeconds; Permission=$Permission
         System=$system; History=[Collections.Generic.List[object]]::new()
-        Transport=$Transport; Approve=$Approve; Busy=$false; EnableImages=[bool]$EnableImages
+        Transport=$Transport; Approve=$Approve; Busy=$false; EnableImages=[bool]$EnableImages; ReasoningEffort=$ReasoningEffort; ThinkingBudget=$ThinkingBudget
     }
 }
 
@@ -81,11 +84,12 @@ function Resolve-GoPath($Agent, [string]$Path) {
 }
 
 . (Join-Path $PSScriptRoot 'Tools.ps1')
+. (Join-Path $PSScriptRoot 'Streaming.ps1')
 
-function New-GoRequest($Agent) {
+function New-GoRequest($Agent,[bool]$Stream=$false) {
     $tools = @(Get-GoTools $Agent)
     $headers = @{Authorization="Bearer $env:OPENCODE_API_KEY";'x-opencode-session'=$Agent.Id}
-    $body = @{model=$Agent.Model;stream=$false}
+    $body = @{model=$Agent.Model;stream=$Stream}
     $pendingImages=[Collections.Generic.List[object]]::new()
     switch ($Agent.Protocol) {
         'Chat' {
@@ -109,6 +113,7 @@ function New-GoRequest($Agent) {
             }
             if ($pendingImages.Count -gt 0) {$messages+=@{role='user';content=@($pendingImages.ToArray())}}
             $body.messages=$messages; $body.max_tokens=$Agent.MaxTokens
+            if ($Agent.ReasoningEffort -ne 'Default') {$body.reasoning_effort=$Agent.ReasoningEffort.ToLowerInvariant()}
             $body.tools=@($tools | ForEach-Object { @{type='function';function=$_} })
         }
         'Messages' {
@@ -128,6 +133,7 @@ function New-GoRequest($Agent) {
                 }
             }
             $body.system=$Agent.System; $body.messages=@($messages.ToArray());$body.max_tokens=$Agent.MaxTokens
+            if ($Agent.ThinkingBudget -gt 0) {$body.thinking=@{type='enabled';budget_tokens=$Agent.ThinkingBudget}}
             $body.tools=@($tools | ForEach-Object { @{name=$_.name;description=$_.description;input_schema=$_.parameters} })
         }
         'Responses' {
@@ -150,14 +156,21 @@ function New-GoRequest($Agent) {
             }
             if ($pendingImages.Count -gt 0) {$inputItems+=@{role='user';content=@($pendingImages.ToArray())}}
             $body.instructions=$Agent.System; $body.input=$inputItems; $body.max_output_tokens=$Agent.MaxTokens; $body.store=$false
+            $body.include=@('reasoning.encrypted_content')
+            if ($Agent.ReasoningEffort -ne 'Default') {$body.reasoning=@{effort=$Agent.ReasoningEffort.ToLowerInvariant();summary='auto'}}
             $body.tools=@($tools | ForEach-Object { @{type='function';name=$_.name;description=$_.description;parameters=$_.parameters;strict=$false} })
         }
     }
     @{Uri="$($Agent.BaseUri)/$endpoint";Headers=$headers;Body=$body}
 }
 
-function Send-GoRequest($Agent, $Request) {
-    if ($Agent.Transport) { return & $Agent.Transport $Request }
+function Send-GoRequest($Agent, $Request,[Threading.CancellationToken]$CancellationToken=[Threading.CancellationToken]::None,[scriptblock]$OnEvent) {
+    if ($Agent.Transport) {
+        $response=& $Agent.Transport $Request
+        Publish-GoBufferedResponse $Agent $response $OnEvent
+        return $response
+    }
+    if ($Request.Body.stream) {return Send-GoStreamRequest $Agent $Request $CancellationToken $OnEvent}
     if ([string]::IsNullOrWhiteSpace($env:OPENCODE_API_KEY)) { throw 'Set OPENCODE_API_KEY to your OpenCode Go API key.' }
     for ($attempt=0; $attempt -lt 3; $attempt++) {
         try {
@@ -206,7 +219,7 @@ function ConvertFrom-GoResponse($Agent, $Response) {
 function Invoke-GoAgent {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Agent, [Parameter(Mandatory)][string]$Prompt, [string]$SessionPath,
-        [Threading.CancellationToken]$CancellationToken=[Threading.CancellationToken]::None,[scriptblock]$OnToolUpdate)
+        [Threading.CancellationToken]$CancellationToken=[Threading.CancellationToken]::None,[scriptblock]$OnToolUpdate,[scriptblock]$OnEvent,[switch]$NoStream)
     $CancellationToken.ThrowIfCancellationRequested()
     if ($Agent.Busy) { throw 'This agent already has an active turn.' }
     $Agent.Busy=$true
@@ -215,14 +228,27 @@ function Invoke-GoAgent {
         $Agent.History.Add(@{kind='user';text=$Prompt})
         for ($turn=0; $turn -lt $Agent.MaxTurns; $turn++) {
             $CancellationToken.ThrowIfCancellationRequested()
-            $message = ConvertFrom-GoResponse $Agent (Send-GoRequest $Agent (New-GoRequest $Agent))
+            Publish-GoEvent $OnEvent @{type='assistant_start';turn=$turn}
+            $response=Send-GoRequest $Agent (New-GoRequest $Agent (-not $NoStream)) $CancellationToken $OnEvent
+            if ($NoStream -and -not $Agent.Transport) {Publish-GoBufferedResponse $Agent $response $OnEvent}
+            $message = ConvertFrom-GoResponse $Agent $response
+            Publish-GoEvent $OnEvent @{type='assistant_end';turn=$turn}
             $Agent.History.Add($message)
             foreach ($call in $message.calls) {
                 Write-Verbose "Tool: $($call.name)"
+                Publish-GoEvent $OnEvent @{type='tool_start';callId=$call.id;name=$call.name}
+                $callback=$OnEvent;$legacyCallback=$OnToolUpdate;$toolId=$call.id
+                $bridge={
+                    param($update)
+                    if ($legacyCallback) {$null=& $legacyCallback $update}
+                    if ($callback) {$null=& $callback @{type='tool_output_delta';callId=$toolId;name=$update.name;delta=$update.text}}
+                }.GetNewClosure()
+                if (-not $OnEvent -and -not $OnToolUpdate) {$bridge=$null}
                 try {
                     $arguments = if ($call.arguments -is [string]) { ConvertFrom-Json -InputObject $call.arguments -AsHashtable } else { $call.arguments }
-                    $result = Invoke-GoTool $Agent $call.name $arguments -CancellationToken $CancellationToken -OnUpdate $OnToolUpdate
+                    $result = Invoke-GoTool $Agent $call.name $arguments -CancellationToken $CancellationToken -OnUpdate $bridge
                 } catch { $result=@{text=$_.Exception.Message;isError=$true} }
+                Publish-GoEvent $OnEvent @{type='tool_end';callId=$call.id;name=$call.name;text=$result.text;isError=$result.isError;details=$(if ($result.ContainsKey('details')) {$result.details} else {@{}})}
                 $Agent.History.Add(@{kind='result';callId=$call.id;text=$result.text;isError=$result.isError;content=$(if ($result.ContainsKey('content')) {$result.content} else {@()});details=$(if ($result.ContainsKey('details')) {$result.details} else {@()})})
             }
             $checkpoint=$Agent.History.Count
@@ -235,6 +261,7 @@ function Invoke-GoAgent {
         # Roll back incomplete exchanges so retries never send unanswered tool calls.
         if ($Agent.History.Count -gt $checkpoint) { $Agent.History.RemoveRange($checkpoint,$Agent.History.Count-$checkpoint) }
         if ($SessionPath) { Save-GoSession $Agent $SessionPath }
+        Publish-GoEvent $OnEvent @{type='agent_error';message=$_.Exception.Message}
         throw
     } finally { $Agent.Busy=$false }
 }
@@ -242,7 +269,7 @@ function Invoke-GoAgent {
 function Save-GoSession {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Agent,[Parameter(Mandatory)][string]$Path)
-    $state = @{Version=1;Id=$Agent.Id;Model=$Agent.Model;Protocol=$Agent.Protocol;Workspace=$Agent.Workspace;System=$Agent.System;EnableImages=$Agent.EnableImages;History=@($Agent.History.ToArray())}
+    $state = @{Version=1;Id=$Agent.Id;Model=$Agent.Model;Protocol=$Agent.Protocol;Workspace=$Agent.Workspace;System=$Agent.System;EnableImages=$Agent.EnableImages;ReasoningEffort=$Agent.ReasoningEffort;ThinkingBudget=$Agent.ThinkingBudget;History=@($Agent.History.ToArray())}
     $full = [IO.Path]::GetFullPath($Path)
     $null=[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($full))
     $temporary=$full+'.'+[guid]::NewGuid().ToString()+'.tmp'
@@ -258,10 +285,14 @@ function Import-GoSession {
         [string]$BaseUri='https://opencode.ai/zen/go/v1',
         [ValidateRange(1,1000)][int]$MaxTurns=30,
         [ValidateRange(1,65536)][int]$MaxTokens=8192,
-        [ValidateRange(1,3600)][int]$TimeoutSeconds=120,[switch]$EnableImages)
+        [ValidateRange(1,3600)][int]$TimeoutSeconds=120,[switch]$EnableImages,
+        [ValidateSet('Default','Low','Medium','High')][string]$ReasoningEffort='Default',
+        [ValidateRange(0,65535)][int]$ThinkingBudget=0)
     $state=Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -AsHashtable
     if ($state.Version -ne 1) { throw 'Unsupported session version.' }
-    $agent=New-GoAgent -Model $state.Model -Protocol $state.Protocol -Workspace $state.Workspace -Permission $Permission -Transport $Transport -Approve $Approve -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:($EnableImages -or ($state.ContainsKey('EnableImages') -and $state.EnableImages))
+    if (-not $PSBoundParameters.ContainsKey('ReasoningEffort') -and $state.ContainsKey('ReasoningEffort')) {$ReasoningEffort=$state.ReasoningEffort}
+    if (-not $PSBoundParameters.ContainsKey('ThinkingBudget') -and $state.ContainsKey('ThinkingBudget')) {$ThinkingBudget=$state.ThinkingBudget}
+    $agent=New-GoAgent -Model $state.Model -Protocol $state.Protocol -Workspace $state.Workspace -Permission $Permission -Transport $Transport -Approve $Approve -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:($EnableImages -or ($state.ContainsKey('EnableImages') -and $state.EnableImages)) -ReasoningEffort $ReasoningEffort -ThinkingBudget $ThinkingBudget
     $agent.Id=$state.Id; $agent.System=$state.System
     foreach ($m in $state.History) { $agent.History.Add($m) }
     $agent

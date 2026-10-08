@@ -445,6 +445,23 @@ function Invoke-GoSearch($Agent,[string]$Name,[string]$Path,$Arguments,[Threadin
     Complete-GoOutput ($rows -join "`n") $details $notices
 }
 
+function Read-GoOutputUpdates($Readers,[scriptblock]$OnUpdate,[switch]$Flush) {
+    $bytes=[byte[]]::new(8192);$chars=[char[]]::new(16384)
+    foreach ($reader in $Readers) {
+        $chunks=0
+        while (($count=$reader.stream.Read($bytes,0,$bytes.Length)) -gt 0) {
+            $length=$reader.decoder.GetChars($bytes,0,$count,$chars,0,$false)
+            if ($length -gt 0) {$null=& $OnUpdate @{type='tool_update';name='powershell';text=[string]::new($chars,0,$length)}}
+            $chunks++
+            if (-not $Flush -and $chunks -ge 32) {break}
+        }
+        if ($Flush) {
+            $length=$reader.decoder.GetChars($bytes,0,0,$chars,0,$true)
+            if ($length -gt 0) {$null=& $OnUpdate @{type='tool_update';name='powershell';text=[string]::new($chars,0,$length)}}
+        }
+    }
+}
+
 function Invoke-GoPowerShell($Agent,$Arguments,[Threading.CancellationToken]$CancellationToken,[scriptblock]$OnUpdate) {
     $directory=Resolve-GoPath $Agent '.power-agent/output'
     $null=[IO.Directory]::CreateDirectory($directory)
@@ -462,21 +479,21 @@ function Invoke-GoPowerShell($Agent,$Arguments,[Threading.CancellationToken]$Can
     $process=[Diagnostics.Process]::new();$process.StartInfo=$start
     $output=[IO.FileStream]::new($outputPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite,1)
     $errors=[IO.FileStream]::new($errorPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::ReadWrite,1)
-    $timer=[Diagnostics.Stopwatch]::StartNew();$status=$null;$reader=$null;$started=$false
+    $timer=[Diagnostics.Stopwatch]::StartNew();$status=$null;$reader=$null;$errorReader=$null;$started=$false
     try {
         $CancellationToken.ThrowIfCancellationRequested();$null=$process.Start();$started=$true
         $stdout=$process.StandardOutput.BaseStream.CopyToAsync($output);$stderr=$process.StandardError.BaseStream.CopyToAsync($errors)
-        if ($OnUpdate) {$reader=[IO.StreamReader]::new([IO.FileStream]::new($outputPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite),[Text.Encoding]::UTF8)}
+        if ($OnUpdate) {
+            $reader=@{stream=[IO.FileStream]::new($outputPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite);decoder=[Text.Encoding]::UTF8.GetDecoder()}
+            $errorReader=@{stream=[IO.FileStream]::new($errorPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite);decoder=[Text.Encoding]::UTF8.GetDecoder()}
+        }
         while (-not $process.WaitForExit(100)) {
-            if ($reader) {
-                $buffer=[char[]]::new(8192)
-                while (($count=$reader.Read($buffer,0,$buffer.Length)) -gt 0) {$null=& $OnUpdate @{type='tool_update';name='powershell';text=[string]::new($buffer,0,$count)}}
-            }
+            if ($reader) {Read-GoOutputUpdates @($reader,$errorReader) $OnUpdate}
             if ($CancellationToken.IsCancellationRequested) {$status='Command aborted';$process.Kill($true);break}
             if ($Arguments.ContainsKey('timeout') -and $timer.Elapsed.TotalSeconds -ge $Arguments.timeout) {$status="Command timed out after $($Arguments.timeout) seconds";$process.Kill($true);break}
         }
         $process.WaitForExit();$null=$stdout.GetAwaiter().GetResult();$null=$stderr.GetAwaiter().GetResult();$output.Dispose();$errors.Dispose()
-        if ($reader) {$buffer=[char[]]::new(8192);while (($count=$reader.Read($buffer,0,$buffer.Length)) -gt 0) {$null=& $OnUpdate @{type='tool_update';name='powershell';text=[string]::new($buffer,0,$count)}};$reader.Dispose();$reader=$null}
+        if ($reader) {Read-GoOutputUpdates @($reader,$errorReader) $OnUpdate -Flush;$reader.stream.Dispose();$errorReader.stream.Dispose();$reader=$null;$errorReader=$null}
         # Unexpected runtime stderr is appended; normal command streams were merged in the child.
         if ((Get-Item -LiteralPath $errorPath).Length -gt 0) {
             $destination=[IO.File]::Open($outputPath,[IO.FileMode]::Append,[IO.FileAccess]::Write)
@@ -500,11 +517,11 @@ function Invoke-GoPowerShell($Agent,$Arguments,[Threading.CancellationToken]$Can
         if ($truncated -or $status) {$details.fullOutputPath=$outputPath;$details.truncation=$truncation;$text+="`n`n[Showing last 2000 lines / 50 KiB. Full output: $outputPath]"}
         else {[IO.File]::Delete($outputPath)}
         $text+="`nexit_code: $($process.ExitCode)"
-        if ($status) {$text+="`n$status"}
+        if ($status) {$details.status=$status;$text+="`n$status"}
         New-GoToolResult $text ($null -ne $status -or $process.ExitCode -ne 0) $details $null @{output=$truncation.content;truncated=$truncated;full_output_path=$(if ($truncated -or $status) {$outputPath} else {$null});exit_code=$process.ExitCode;wall_time_seconds=$details.wallTimeSeconds}
     } finally {
         if ($started -and -not $process.HasExited) {$process.Kill($true);$process.WaitForExit()}
-        if ($reader) {$reader.Dispose()};$output.Dispose();$errors.Dispose();$process.Dispose()
+        if ($reader) {$reader.stream.Dispose()};if ($errorReader) {$errorReader.stream.Dispose()};$output.Dispose();$errors.Dispose();$process.Dispose()
         if ([IO.File]::Exists($errorPath)) {[IO.File]::Delete($errorPath)}
     }
 }

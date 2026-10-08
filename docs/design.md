@@ -47,3 +47,8 @@ PowerShell 以外の言語ランタイムや SDK を依存に追加せず、HTTP
 コマンドの stdout／stderr は非同期にファイルへ転送し、大量出力を丸ごとメモリに保持しません。末尾だけを UTF-8 の境界で読取り、2000行／50 KiB 制限を適用します。出力更新は小さなチャンクで呼出元へ渡します。PowerShell のストリームは子プロセス内でまとめ、ランタイムから直接 stderr に出た内容は末尾へ追加します。
 
 画像ブロックは履歴に保持します。Messages は `tool_result.content` 内へ、Chat と Responses はすべてのツール結果を送信した後に関連する user 画像メッセージとして変換します。画像送信を無効にしたときはバイナリ添付を省略し、説明だけを送ります。
+
+
+ストリーミング実装は `Streaming.ps1`、CLI の描画は `Console.ps1` です。HTTP は標準 .NET の HttpClient を ResponseHeadersRead で使い、SSE の data フィールドをイベント単位に処理します。Chat は choice／tool index で差分を蓄積し、Messages は content block と signature／input JSON の差分を蓄積します。Responses は差分を通知し、response.completed の正規の output を履歴に保存します。終端と完全な応答を確認する前にツールを実行しません。
+
+モデルイベントとツールイベントは同期コールバックで呼出元へ渡します。CLI は本文の戻り値を再表示せず、ストリームのイベントだけを表示します。コマンド出力の増分読取は各ストリームに UTF-8 Decoder を持ち、ファイル追記がマルチバイト文字の途中で止まっても後続バイトまで保持します。

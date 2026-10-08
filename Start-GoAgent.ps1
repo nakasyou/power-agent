@@ -10,6 +10,10 @@ param(
     [switch]$Resume,
     [switch]$ListModels,
     [switch]$EnableImages,
+    [switch]$NoStream,
+    [switch]$HideReasoning,
+    [ValidateSet('Default','Low','Medium','High')][string]$ReasoningEffort='Default',
+    [ValidateRange(0,65535)][int]$ThinkingBudget=0,
     [ValidateRange(1,1000)][int]$MaxTurns=30,
     [ValidateRange(1,65536)][int]$MaxTokens=8192,
     [ValidateRange(1,3600)][int]$TimeoutSeconds=120,
@@ -17,15 +21,19 @@ param(
 )
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'PSGoAgent.psd1') -Force
+. (Join-Path $PSScriptRoot 'Console.ps1')
+$renderer=New-GoConsoleRenderer -HideReasoning:$HideReasoning
 if ($ListModels) { Get-GoModelCatalog; return }
 if (-not $env:OPENCODE_API_KEY) { throw '環境変数 OPENCODE_API_KEY に OpenCode Go の API キーを設定してください。' }
 if ($Resume) {
     if (-not $SessionPath) { throw '-Resume requires -SessionPath.' }
-    $agent=Import-GoSession -Path $SessionPath -Permission $Permission -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:$EnableImages
+    $thinkingOptions=@{}
+    foreach ($key in @('ReasoningEffort','ThinkingBudget')) {if ($PSBoundParameters.ContainsKey($key)) {$thinkingOptions[$key]=$PSBoundParameters[$key]}}
+    $agent=Import-GoSession -Path $SessionPath -Permission $Permission -BaseUri $BaseUri -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:$EnableImages @thinkingOptions
 } else {
-    $agent=New-GoAgent -Model $Model -Protocol $Protocol -Workspace $Workspace -Permission $Permission -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:$EnableImages -BaseUri $BaseUri
+    $agent=New-GoAgent -Model $Model -Protocol $Protocol -Workspace $Workspace -Permission $Permission -MaxTurns $MaxTurns -MaxTokens $MaxTokens -TimeoutSeconds $TimeoutSeconds -EnableImages:$EnableImages -BaseUri $BaseUri -ReasoningEffort $ReasoningEffort -ThinkingBudget $ThinkingBudget
 }
-if ($PSBoundParameters.ContainsKey('Prompt')) { Invoke-GoAgent -Agent $agent -Prompt $Prompt -SessionPath $SessionPath; return }
+if ($PSBoundParameters.ContainsKey('Prompt')) { Invoke-GoAgent -Agent $agent -Prompt $Prompt -SessionPath $SessionPath -NoStream:$NoStream -OnEvent $renderer | Out-Null; return }
 Write-Host "PSGoAgent | $($agent.Model) | $($agent.Protocol) | $($agent.Workspace)"
 Write-Host '/exit 終了、/new 新規会話、/save PATH 保存、/help ヘルプ'
 while ($true) {
@@ -41,6 +49,6 @@ while ($true) {
         Write-Host '新しい会話を開始しました。'; continue
     }
     if ($line.StartsWith('/save ')) { $SessionPath=$line.Substring(6).Trim(); Save-GoSession $agent $SessionPath; Write-Host "Saved: $SessionPath"; continue }
-    try { Invoke-GoAgent -Agent $agent -Prompt $line -SessionPath $SessionPath | Out-Host }
+    try { Invoke-GoAgent -Agent $agent -Prompt $line -SessionPath $SessionPath -NoStream:$NoStream -OnEvent $renderer | Out-Null }
     catch { Write-Host $_.Exception.Message -ForegroundColor Red }
 }

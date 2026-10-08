@@ -59,7 +59,7 @@ try {
             }
             [IO.File]::WriteAllText((Join-Path $root 'edit-target.txt'),'one two')
             $agent=New-GoAgent -Model test -Protocol $protocol -Workspace $root -Permission Auto -BaseUri "http://127.0.0.1:$port/v1" -TimeoutSeconds 10
-            $answer=Invoke-GoAgent $agent '読み取って'
+            $answer=Invoke-GoAgent $agent '読み取って' -NoStream
             if ($answer -ne 'HTTP完了') { throw "$protocol HTTP answer mismatch" }
             $null=Wait-Job $job -Timeout 10
             $capture=Receive-Job $job -ErrorAction Stop

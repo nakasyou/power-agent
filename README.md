@@ -28,6 +28,60 @@ $env:OPENCODE_API_KEY = 'your-opencode-api-key'
 
 PowerShell 7 を `pwsh` として起動してください。Windows PowerShell 5.1 は対象外です。Windows の実行ポリシーでブロックされる場合は、所属組織の方針に従ってスクリプトの実行を許可してください。
 
+## ストリーミング表示（0.3.0）
+
+CLI は既定で、モデルの reasoning と本文、実行中の PowerShell ツール出力を随時表示します。
+
+```text
+[reasoning]
+モデルから返された reasoning または reasoning summary …
+[assistant]
+本文 …
+[tool: powershell]
+実行中のコマンド出力 …
+exit_code: 0
+```
+
+```powershell
+# 既定でストリーミング
+./Start-GoAgent.ps1 -Workspace . -Model kimi-k3
+
+# reasoning の表示だけを隠す。履歴からは削除しない
+./Start-GoAgent.ps1 -Workspace . -HideReasoning
+
+# LLM 応答を一括受信。ツールのリアルタイム出力は維持
+./Start-GoAgent.ps1 -Workspace . -NoStream
+
+# 対応する Chat／Responses モデルで reasoning effort を明示
+./Start-GoAgent.ps1 -Workspace . -Model gpt-6-luna -ReasoningEffort Medium
+
+# 対応する Messages モデルで thinking budget を明示
+./Start-GoAgent.ps1 -Workspace . -Model minimax-m2.7 -ThinkingBudget 2048 -MaxTokens 8192
+```
+
+reasoning を返すか、全文・要約のどちらを返すかはモデル／provider の仕様によります。返されない reasoning を生成・表示することはありません。`-ReasoningEffort` と `-ThinkingBudget` は任意で、既定では provider の設定に従います。対応しないモデルでは指定しないでください。thinking budget は1024以上、`MaxTokens` 未満です。署名や暗号化された reasoning は再送用に保持し、画面には表示しません。
+
+3種類の API の SSE に対応します。ツール引数は分割データを組み立て、応答完了後に実行します。途中切断、不完全な応答、キャンセルでは未完了の履歴を残しません。429 などの再試行はストリーム開始前だけ行い、表示済みの文章は再試行で重複させません。ストリーミング要求に対して JSON を返す互換サーバーは、完成した内容を一度表示します。
+
+モジュール利用時は `-OnEvent` で受け取れます。`Invoke-GoAgent` の戻り値は引き続き最終本文です。
+
+```powershell
+Import-Module ./PSGoAgent.psd1
+$agent = New-GoAgent -Workspace .
+$answer = Invoke-GoAgent -Agent $agent -Prompt '調べて修正して' -OnEvent {
+    param($event)
+    switch ($event.type) {
+        reasoning_delta   { Write-Host $event.delta -NoNewline -ForegroundColor DarkGray }
+        text_delta        { Write-Host $event.delta -NoNewline }
+        tool_start        { Write-Host "`nTool: $($event.name)" }
+        tool_output_delta { Write-Host $event.delta -NoNewline }
+        tool_end          { Write-Host "`nTool completed: $($event.name)" }
+    }
+}
+```
+
+イベント一覧とキャンセル・保存の扱いは [docs/streaming.md](docs/streaming.md) を参照してください。
+
 ## モデルと API
 
 既定のモデルは `glm-5.3-flash` です。既知のモデルは API 方式を自動選択します。`opencode-go/` 接頭辞も受け付けます。
@@ -116,7 +170,7 @@ Invoke-GoTool -Agent $agent -Name powershell -Arguments @{
 $cts.Dispose()
 ```
 
-`Invoke-GoAgent` でも `-CancellationToken` と `-OnToolUpdate` を指定できます。キャンセル時は実行中のコマンドをプロセスツリーごと停止し、完了済みのファイル変更は残します。HTTP 通信自体は引き続き `-TimeoutSeconds` に従います。
+`Invoke-GoAgent` でも `-CancellationToken`、`-OnEvent` と従来の `-OnToolUpdate` を指定できます。キャンセル時は実行中のコマンドをプロセスツリーごと停止し、完了済みのファイル変更は残します。ストリーミング HTTP 通信もキャンセルできます。`-TimeoutSeconds` は接続・受信・再試行の待機を含む1回のモデル応答全体の上限です。`-NoStream` の一括受信では HTTP タイムアウトが上限になります。
 
 モデルのツール引数は許可した名前・引数に限定して検証します。ツールが失敗したり拒否されたりすると、エラーをモデルへ返して処理を継続します。1応答に複数のツール呼出しがある場合は順番に実行します。
 
@@ -165,7 +219,7 @@ $restored = Import-GoSession -Path ./sessions/work.json
 
 既定では1依頼につき最大30回の API 呼出し、出力上限8192トークン、HTTP タイムアウト120秒です。`-MaxTurns`、`-MaxTokens`、`-TimeoutSeconds` で変更できます。テキスト読取・コマンド出力は2000行／50 KiB、検索と編集差分は50 KiB を目安に制限し、継続案内を付けます。429／500／502／503／504 の応答は2秒・4秒の待機後に最大2回再試行します。トークン上限で途切れた応答は完成した回答として扱いません。
 
-LLM 応答は非ストリーミングで受信します。MCP、プラグイン、Pi の全 TUI、履歴の自動圧縮、分岐、バックグラウンド実行は未実装です。長い会話では `/new` で切り替えてください。完了したファイル変更の自動ロールバックは行いません。ツールの対応範囲と Pi との差は [docs/tool-compatibility.md](docs/tool-compatibility.md) にまとめています。
+LLM 応答は既定でストリーミング受信します。MCP、プラグイン、Pi の全 TUI、履歴の自動圧縮、分岐、バックグラウンド実行は未実装です。長い会話では `/new` で切り替えてください。完了したファイル変更の自動ロールバックは行いません。ツールの対応範囲と Pi との差は [docs/tool-compatibility.md](docs/tool-compatibility.md) にまとめています。
 
 追加のテスト依存なしで実行できます。
 
@@ -173,9 +227,10 @@ LLM 応答は非ストリーミングで受信します。MCP、プラグイン�
 pwsh -NoProfile -File ./tests/Run-Tests.ps1
 pwsh -NoProfile -File ./tests/Tools.Tests.ps1
 pwsh -NoProfile -File ./tests/Http.Tests.ps1
+pwsh -NoProfile -File ./tests/Streaming.Tests.ps1
 ```
 
-PowerShell 7.6.3 / Linux で、136件のアサーションと3方式の実 HTTP モック統合シナリオを検証済み。複数編集・失敗時の無変更・補助照合・BOM／改行保持・パッチの適用結果・別プロセス間の変更ロック、検索と除外設定、画像の API 形式変換、出力制限・更新・キャンセルに加え、認証・ツール往復・保存／再開・429再試行を確認しました。OpenCode Go の API キーが提供されていないため実サービス接続は未検証です。Windows / macOS での実行は未検証です。
+PowerShell 7.6.3 / Linux で、194件のアサーションと3方式の実 HTTP モック統合シナリオを検証済み。複数編集・失敗時の無変更・補助照合・BOM／改行保持・パッチの適用結果・別プロセス間の変更ロック、検索と除外設定、画像の API 形式変換、出力制限・更新・キャンセルに加え、認証・ツール往復・保存／再開・429再試行を確認しました。SSE の分割 UTF-8／複数行データ、reasoning／本文のリアルタイム通知、分割ツール引数、途中切断・キャンセル・タイムアウト、CLI の重複しない表示も検証しました。OpenCode Go の API キーが提供されていないため実サービス接続は未検証です。Windows / macOS での実行は未検証です。
 
 ## 参考
 

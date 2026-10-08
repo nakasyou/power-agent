@@ -16,7 +16,7 @@
 | .gitignore／.ignore | 基本パターン、否定、ネスト、ネストした Git 境界に対応。Git のグローバル除外・info/exclude・すべてのエスケープ規則は未対応 |
 | ls のソート、隠し項目、ディレクトリ表示、limit | 対応 |
 | bash | 使用しない。PowerShell のみという要件に合わせ powershell を公開 |
-| powershell の timeout、非ゼロ終了、出力更新 | 対応。既定の実行タイムアウトなし。タイムアウトは秒で指定 |
+| powershell の timeout、非ゼロ終了、CLI へのリアルタイム出力更新 | 対応。既定の実行タイムアウトなし。タイムアウトは秒で指定 |
 | コマンド出力の末尾2000行／50 KiB、全文保存 | 対応。全文は workspace 内の `.power-agent/output` に保存 |
 | ツールキャンセル、プロセスツリー停止 | `CancellationToken` と CLI の Ctrl+C に対応。完了した変更は巻き戻さない |
 | ツール結果・構造化出力 | `Invoke-GoTool` は text／content／details／structuredContent／isError を返す |
@@ -28,3 +28,6 @@ workspace 外とシンボリックリンクを拒否する既存のファイル�
 テキスト読取・編集はファイルをメモリに読込みます。grep は対象ファイルの行をメモリに読みます。コマンドの大量出力はディスクに転送します。正常なコマンドストリームはまとめて取得しますが、直接ランタイム stderr へ書かれた内容は末尾へ追加されるため、完全な時系列順序を保証しません。
 
 検証は PowerShell 7.6.3 / Linux のローカルテストと HTTP モックで行いました。Windows／macOS、実 OpenCode Go、画像対応モデルの実サービス接続は未検証です。
+
+
+0.3.0 ではモデルの reasoning／本文 SSE とツール出力を CLI でストリーミング表示します。LLM のストリーミング形式は Chat／Messages／Responses の3つに対応しています。Pi の TUI、実行中の追加指示、履歴圧縮・分岐、ツール拡張 API は引き続き未対応です。
